@@ -1,7 +1,7 @@
 {
   "supplySyncIntervalSec": 3600,
   "monitorIntervalSec": 180,
-  "maVolumeMultiplier": 3,
+  "maVolumeMultiplier": 5,
   "volumeToMarketcapRatio": 0.2,
   "klineInterval": "15m",
   "maWindow": 7,

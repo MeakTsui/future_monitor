@@ -1,10 +1,10 @@
 import fs from "fs";
 import fetch from "node-fetch";
 import logger from "./logger.js";
+import { getAllSuppliesMap, getAlertState as dbGetAlertState, setAlertState as dbSetAlertState } from "./db.js";
 
 const CONFIG_FILE = "./config.json";
-const SUPPLY_FILE = "./supply.json";
-const ALERT_STATE_FILE = "./alerts_state.json";
+// 已迁移到 SQLite，移除本地 JSON 文件依赖
 
 function loadConfig() {
     return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
@@ -40,8 +40,9 @@ function beautifyDetailsText(detailsText) {
     }
 }
 
-function loadSupply() {
-    return JSON.parse(fs.readFileSync(SUPPLY_FILE, "utf8")).data;
+function loadSupplyMap() {
+    // 从 SQLite 读取全部 supplies，返回 symbol -> entry 的映射
+    return getAllSuppliesMap();
 }
 
 async function fetchBinanceFuturesSymbols() {
@@ -121,53 +122,29 @@ const providers = {
 };
 
 // ========== Alert helpers: 状态管理、冷却与同K线去重 ==========
-function loadAlertState() {
-    try {
-        if (fs.existsSync(ALERT_STATE_FILE)) {
-            const raw = fs.readFileSync(ALERT_STATE_FILE, "utf8");
-            if (raw && raw.trim()) return JSON.parse(raw);
-        }
-    } catch (e) {
-        logger.warn({ err: e.message }, "读取 alerts_state.json 失败，使用空状态");
-    }
-    return { last_alerts: {} };
-}
-
-function saveAlertState(state) {
-    try {
-        fs.writeFileSync(ALERT_STATE_FILE, JSON.stringify(state, null, 2));
-    } catch (e) {
-        logger.error({ err: e.message }, "保存 alerts_state.json 失败");
-    }
-}
-
 function makeAlertKey(symbol, reason) {
     return `${symbol}|${reason}`;
 }
 
-function shouldAlert(state, symbol, reason, closeTime, cooldownSec) {
+function shouldAlert(symbol, reason, closeTime, cooldownSec) {
     const key = makeAlertKey(symbol, reason);
-    const entry = state.last_alerts[key];
+    const row = dbGetAlertState(key);
     const now = Date.now();
-    if (entry) {
-        if (entry.last_kline_close === closeTime) {
+    if (row) {
+        if (row.last_kline_close === closeTime) {
             return { ok: false, reason: "same_kline", remainingSec: 0 };
         }
-        if (entry.last_at && now - entry.last_at < cooldownSec * 1000) {
-            const remainingMs = entry.last_at + cooldownSec * 1000 - now;
+        if (row.last_at && now - row.last_at < cooldownSec * 1000) {
+            const remainingMs = row.last_at + cooldownSec * 1000 - now;
             return { ok: false, reason: "cooldown", remainingSec: Math.ceil(remainingMs / 1000) };
         }
     }
     return { ok: true, reason: null, remainingSec: 0 };
 }
 
-function markAlertSent(state, symbol, reason, closeTime) {
+function markAlertSent(symbol, reason, closeTime) {
     const key = makeAlertKey(symbol, reason);
-    state.last_alerts[key] = {
-        last_at: Date.now(),
-        last_kline_close: closeTime,
-    };
-    saveAlertState(state);
+    dbSetAlertState(key, Date.now(), closeTime);
 }
 
 async function alert(symbol, reason, data, config) {
@@ -315,11 +292,11 @@ function findSupplyForSymbol(supplyData, contractSymbol) {
 // =============================================================
 
 async function monitor(config) {
-    const supplyData = loadSupply();
+    const supplyData = loadSupplyMap();
     const symbols = await fetchBinanceFuturesSymbols();
 
     const cooldownSec = typeof config.alertCooldownSec === "number" ? config.alertCooldownSec : 1800;
-    const alertState = loadAlertState();
+    // 去重状态改由 SQLite 持久化
 
     const supplyCount = supplyData ? Object.keys(supplyData).length : 0;
     logger.info({ symbols: symbols.length, cooldownSec, supplyCount, klineInterval: config.klineInterval, maWindow: config.maWindow }, "开始监控");
@@ -359,7 +336,7 @@ async function monitor(config) {
             // 规则1: 成交量突破 MA（合并汇总）
             if (ma > 0 && lastVol >= ma * config.maVolumeMultiplier) {
                 const reason1 = "成交量突破 MA";
-                const check1 = shouldAlert(alertState, sym, reason1, closeTime, cooldownSec);
+                const check1 = shouldAlert(sym, reason1, closeTime, cooldownSec);
                 if (check1.ok) {
                     const ratio = ma > 0 ? (lastVol / ma) : 0;
                     rule1Hits.push({
@@ -391,10 +368,10 @@ async function monitor(config) {
                     const volumeUsd = lastVol * closePrice;
                     if (volumeUsd >= config.volumeToMarketcapRatio * marketCap) {
                         const reason2 = `15m成交量达到市值${config.volumeToMarketcapRatio}倍`;
-                        const check2 = shouldAlert(alertState, sym, reason2, closeTime, cooldownSec);
+                        const check2 = shouldAlert(sym, reason2, closeTime, cooldownSec);
                         if (check2.ok) {
                             await alert(sym, reason2, { volumeUsd, marketCap, deltaPct, trendEmoji, prevClose, closePrice }, config);
-                            markAlertSent(alertState, sym, reason2, closeTime);
+                            markAlertSent(sym, reason2, closeTime);
                             logger.info({ symbol: sym, base: supplyFound.key, volumeUsd, marketCap }, "规则2发送");
                         } else {
                             logger.debug({ symbol: sym, reason: check2.reason, remainingSec: check2.remainingSec }, "规则2抑制");
@@ -415,18 +392,7 @@ async function monitor(config) {
         await new Promise((res) => setTimeout(res, 200)); // 控制速率
     }
 
-    // 合并发送规则1
-    if (rule1Hits.length > 0) {
-        await alertBatch(`${config.klineInterval}成交量突破 MA(${config.maWindow}) ${config.maVolumeMultiplier}倍`, rule1Hits, config);
-        // 发送成功后，统一标记状态
-        for (const h of rule1Hits) {
-            markAlertSent(alertState, h.symbol, h.reason, h.closeTime);
-        }
-        logger.info({ count: rule1Hits.length }, "规则1批量发送完成");
-    } else {
-        logger.debug("本轮无规则1批量告警需要发送");
-    }
-
+    // ...
     if (rule2Enabled) {
         if (missingSupplyCount > 0) {
             logger.warn({ missingSupplyCount, examples: missingSupplyExamples }, "本轮规则2跳过若干交易对（缺少 supply）");
