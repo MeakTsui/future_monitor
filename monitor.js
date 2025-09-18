@@ -430,7 +430,7 @@ async function monitor(config) {
         await alertBatch(`${config.klineInterval}成交量突破 MA(${config.maWindow}) ${config.maVolumeMultiplier}倍`, rule1Hits, config);
         // 发送成功后，统一标记状态
         for (const h of rule1Hits) {
-            markAlertSent(alertState, h.symbol, h.reason, h.closeTime);
+            markAlertSent(h.symbol, h.reason, h.closeTime);
         }
         logger.info({ count: rule1Hits.length }, "规则1批量发送完成");
     } else {
