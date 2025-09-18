@@ -425,7 +425,18 @@ async function monitor(config) {
         await new Promise((res) => setTimeout(res, 200)); // 控制速率
     }
 
-    // ...
+    // 合并发送规则1
+    if (rule1Hits.length > 0) {
+        await alertBatch(`${config.klineInterval}成交量突破 MA(${config.maWindow}) ${config.maVolumeMultiplier}倍`, rule1Hits, config);
+        // 发送成功后，统一标记状态
+        for (const h of rule1Hits) {
+            markAlertSent(alertState, h.symbol, h.reason, h.closeTime);
+        }
+        logger.info({ count: rule1Hits.length }, "规则1批量发送完成");
+    } else {
+        logger.debug("本轮无规则1批量告警需要发送");
+    }
+
     if (rule2Enabled) {
         if (missingSupplyCount > 0) {
             logger.warn({ missingSupplyCount, examples: missingSupplyExamples }, "本轮规则2跳过若干交易对（缺少 supply）");
