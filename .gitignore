@@ -30,3 +30,5 @@ coverage/
 # Misc
 *.swp
 *.swo
+
+config.json
