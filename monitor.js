@@ -22,6 +22,20 @@ function beautifyDetailsText(detailsText) {
             map[kRaw] = vRaw;
         }
         const lineParts = [];
+        // 优先展示 USD 成交额和市值（若存在）
+        if (map.volumeUsd !== undefined) {
+            const n = parseFloat(map.volumeUsd);
+            lineParts.push(`成交额(USD)=${Number.isFinite(n) ? formatCurrency(n) : map.volumeUsd}`);
+        }
+        if (map.maUsd !== undefined) {
+            const n = parseFloat(map.maUsd);
+            lineParts.push(`MA额(USD)=${Number.isFinite(n) ? formatCurrency(n) : map.maUsd}`);
+        }
+        if (map.marketCap !== undefined) {
+            const n = parseFloat(map.marketCap);
+            lineParts.push(`市值=${Number.isFinite(n) ? formatCurrency(n) : map.marketCap}`);
+        }
+        // 兼容旧键
         if (map.x !== undefined) {
             const n = parseFloat(map.x);
             lineParts.push(`倍数 x=${Number.isFinite(n) ? formatNumber(n) : map.x}`);
@@ -166,18 +180,22 @@ async function alertBatch(title, items, config) {
 
     const header = `*ALERT* [批量] ${title}（共 ${items.length} 条）`;
     const lines = items.map(i => {
-        // const emoji = i.trendEmoji || '';
         const link = `[${i.symbol}](${buildBinanceFuturesUrl(i.symbol)})`;
         const parts = [];
         // 数值字段按存在性添加，避免 undefined
         if (typeof i.ratio === 'number' && !Number.isNaN(i.ratio)) {
             parts.push(`倍数 x=${formatNumber(i.ratio)}`);
         }
-        if (typeof i.lastVol === 'number' && !Number.isNaN(i.lastVol)) {
-            parts.push(`成交量=${formatNumber(i.lastVol)}`);
+        // 使用 USD 计价的成交额与 MA 成交额
+        if (typeof i.volumeUsd === 'number' && !Number.isNaN(i.volumeUsd)) {
+            parts.push(`成交额(USD)=${formatCurrency(i.volumeUsd)}`);
         }
-        if (typeof i.ma === 'number' && !Number.isNaN(i.ma)) {
-            parts.push(`MA=${formatNumber(i.ma)}`);
+        if (typeof i.maUsd === 'number' && !Number.isNaN(i.maUsd)) {
+            parts.push(`MA额(USD)=${formatCurrency(i.maUsd)}`);
+        }
+        // 市值
+        if (typeof i.marketCap === 'number' && !Number.isNaN(i.marketCap)) {
+            parts.push(`市值=${formatCurrency(i.marketCap)}`);
         }
         if (typeof i.prevClose === 'number' && typeof i.closePrice === 'number' &&
             !Number.isNaN(i.prevClose) && !Number.isNaN(i.closePrice)) {
@@ -191,7 +209,7 @@ async function alertBatch(title, items, config) {
         if (!right) {
             right = i.detailsText ? beautifyDetailsText(i.detailsText) : '数据不足';
         }
-        return `- ${i.trendEmoji} ${link}: ${right}`;
+        return `- ${i.trendEmoji || ''} ${link}: ${right}`;
     });
 
     let msg = `${header}\n${lines.join("\n")}`;
@@ -339,6 +357,17 @@ async function monitor(config) {
                 const check1 = shouldAlert(sym, reason1, closeTime, cooldownSec);
                 if (check1.ok) {
                     const ratio = ma > 0 ? (lastVol / ma) : 0;
+                    // 计算以 USD 计价的成交额与 MA 成交额
+                    const volumeUsd = (typeof lastVol === 'number' && typeof closePrice === 'number') ? lastVol * closePrice : undefined;
+                    const maUsd = (typeof ma === 'number' && typeof closePrice === 'number') ? ma * closePrice : undefined;
+                    // 计算市值（若能匹配到 supply）
+                    let marketCap;
+                    try {
+                        const sf = findSupplyForSymbol(supplyData, sym);
+                        if (sf && sf.supply && typeof sf.supply.circulating_supply === 'number') {
+                            marketCap = closePrice * sf.supply.circulating_supply;
+                        }
+                    } catch {}
                     rule1Hits.push({
                         symbol: sym,
                         // 保留结构化数值，便于批量美化展示
@@ -349,8 +378,11 @@ async function monitor(config) {
                         trendEmoji,
                         prevClose,
                         closePrice,
-                        // 兼容旧字段，必要时仍可作为后备显示
-                        detailsText: `lastVol=${lastVol.toFixed(2)}, MA=${ma.toFixed(2)}, x=${ratio.toFixed(2)}`,
+                        volumeUsd,
+                        maUsd,
+                        marketCap,
+                        // 兼容字段：作为后备显示（改为放入 USD 与市值，避免退化成手数/张数）
+                        detailsText: `volumeUsd=${(volumeUsd ?? 0).toFixed(2)}, maUsd=${(maUsd ?? 0).toFixed(2)}, marketCap=${(marketCap ?? 0).toFixed(2)}, x=${ratio.toFixed(2)}`,
                         closeTime,
                         reason: reason1,
                     });
@@ -366,11 +398,12 @@ async function monitor(config) {
                 if (supplyFound && supplyFound.supply && supplyFound.supply.circulating_supply) {
                     const marketCap = closePrice * supplyFound.supply.circulating_supply;
                     const volumeUsd = lastVol * closePrice;
+                    const vmMultiple = marketCap > 0 ? (volumeUsd / marketCap) : 0;
                     if (volumeUsd >= config.volumeToMarketcapRatio * marketCap) {
                         const reason2 = `15m成交量达到市值${config.volumeToMarketcapRatio}倍`;
                         const check2 = shouldAlert(sym, reason2, closeTime, cooldownSec);
                         if (check2.ok) {
-                            await alert(sym, reason2, { volumeUsd, marketCap, deltaPct, trendEmoji, prevClose, closePrice }, config);
+                            await alert(sym, reason2, { volumeUsd, marketCap, ratio: vmMultiple, deltaPct, trendEmoji, prevClose, closePrice }, config);
                             markAlertSent(sym, reason2, closeTime);
                             logger.info({ symbol: sym, base: supplyFound.key, volumeUsd, marketCap }, "规则2发送");
                         } else {

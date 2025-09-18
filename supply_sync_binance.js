@@ -1,6 +1,6 @@
 import fetch from 'node-fetch';
 import logger from './logger.js';
-import { upsertSupply, getSyncState, setSyncState } from './db.js';
+import { upsertSupply, getSupplyBySymbol } from './db.js';
 import fs from 'fs';
 
 const CONFIG_FILE = './config.json';
@@ -77,60 +77,54 @@ function mapTokenInfoToEntry(symbol, token) {
   };
 }
 
-async function fetchAndUpdateOne(state, symbol) {
+async function fetchAndUpdateOne(symbol, minUpdateIntervalMs) {
+  // 若数据库已有且未过期，跳过
+  const existing = getSupplyBySymbol(symbol);
+  if (existing && existing.last_updated) {
+    const last = new Date(existing.last_updated).getTime();
+    if (isFinite(last)) {
+      const age = Date.now() - last;
+      if (age < minUpdateIntervalMs) {
+        logger.debug({ symbol, ageMs: age }, '跳过：更新间隔内');
+        return { skipped: true, reason: 'fresh' };
+      }
+    }
+  }
   const url = BINANCE_TOKEN_INFO + encodeURIComponent(symbol);
   const json = await fetchWithRetry(url);
   if (!json || json.code !== '000000' || json.success !== true) {
     throw new Error(`token-info 返回异常: ${JSON.stringify(json)}`);
   }
   const entry = mapTokenInfoToEntry(symbol, json);
+  // 仅当同时获取到 circulating_supply 与 market_cap 时才写入
+  if (entry.circulating_supply == null || entry.market_cap == null) {
+    logger.debug({ symbol }, '跳过：缺少 circulating_supply 或 market_cap');
+    return { skipped: true, reason: 'missing_fields' };
+  }
   upsertSupply(entry);
+  return { updated: 1 };
 }
 
-async function syncOnce() {
-  const syncName = 'binance_token_info';
-  const previous = getSyncState(syncName);
-  let symbols = [];
-  let continueFrom = -1;
+async function syncOnce(config) {
+  const minUpdateIntervalSec = Number(config.supplyMinUpdateIntervalSec || 21600); // 默认6小时
+  const minUpdateIntervalMs = minUpdateIntervalSec * 1000;
+  const symbols = await fetchFuturesBaseAssets();
+  let updated = 0, skipped = 0, failed = 0;
+  logger.info({ total: symbols.length, minUpdateIntervalSec }, '开始增量同步 Binance token-info');
 
-  const continuing = previous && previous.type === syncName && previous.completed === false && Array.isArray(previous.symbols);
-  if (continuing) {
-    symbols = previous.symbols;
-    continueFrom = previous.index;
-    logger.info({ total: symbols.length, index: continueFrom }, '继续上次的 Binance token-info 同步');
-  } else {
-    symbols = await fetchFuturesBaseAssets();
-    setSyncState(syncName, {
-      type: syncName,
-      started_at: new Date().toISOString(),
-      symbols,
-      index: -1,
-      completed: false,
-    });
-    logger.info({ total: symbols.length }, '开始新的 Binance token-info 全量同步');
-  }
-
-  for (let i = continueFrom + 1; i < symbols.length; i++) {
+  for (let i = 0; i < symbols.length; i++) {
     const sym = symbols[i];
     try {
-      await fetchAndUpdateOne(null, sym);
-      const cur = getSyncState(syncName) || { type: syncName, symbols };
-      cur.index = i;
-      cur.completed = false;
-      setSyncState(syncName, cur);
-      logger.debug({ i, sym }, '已更新 token-info');
+      const res = await fetchAndUpdateOne(sym, minUpdateIntervalMs);
+      if (res?.updated) updated += res.updated; else skipped++;
+      logger.debug({ i, sym }, '处理完成');
     } catch (e) {
+      failed++;
       logger.warn({ i, sym, err: e.message }, '抓取 token-info 失败，跳过');
     }
-    // 节流，降低被限流概率
     await new Promise(r => setTimeout(r, 400));
   }
-
-  const done = getSyncState(syncName) || {};
-  done.completed = true;
-  done.finished_at = new Date().toISOString();
-  setSyncState(syncName, done);
-  logger.info('Binance token-info 同步完成');
+  logger.info({ updated, skipped, failed }, '增量同步完成');
 }
 
 async function main() {
@@ -138,7 +132,7 @@ async function main() {
   const interval = (config.supplySyncIntervalSec || 3600) * 1000;
   while (true) {
     try {
-      await syncOnce();
+      await syncOnce(config);
     } catch (e) {
       logger.error({ err: e.message }, 'Binance token-info 同步出错');
     }
