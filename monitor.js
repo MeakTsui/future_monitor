@@ -1,9 +1,10 @@
 import fs from "fs";
 import fetch from "node-fetch";
 import logger from "./logger.js";
-import { getAllSuppliesMap, getAlertState as dbGetAlertState, setAlertState as dbSetAlertState } from "./db.js";
+import {getAllSuppliesMap, getAlertState as dbGetAlertState, setAlertState as dbSetAlertState} from "./db.js";
 
 const CONFIG_FILE = "./config.json";
+
 // 已迁移到 SQLite，移除本地 JSON 文件依赖
 
 function loadConfig() {
@@ -75,7 +76,7 @@ async function fetchKline(symbol, interval = "15m", limit = 7) {
     try {
         data = await resp.json();
     } catch (e) {
-        logger.warn({ symbol, err: e.message }, `[${new Date().toISOString()}] 解析 K 线响应失败`);
+        logger.warn({symbol, err: e.message}, `[${new Date().toISOString()}] 解析 K 线响应失败`);
         return null;
     }
     // Binance 在无效交易对/限流时会返回对象而非数组
@@ -102,7 +103,7 @@ async function sendTelegram(message, providerConfig) {
     try {
         const resp = await fetch(url, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {"Content-Type": "application/json"},
             body: JSON.stringify(body),
         });
         const result = await resp.json();
@@ -118,8 +119,8 @@ async function sendWebhook(message, providerConfig) {
     try {
         const resp = await fetch(providerConfig.url, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: message }),
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({text: message}),
         });
         if (!resp.ok) {
             console.error("Webhook 推送失败:", await resp.text());
@@ -146,14 +147,14 @@ function shouldAlert(symbol, reason, closeTime, cooldownSec) {
     const now = Date.now();
     if (row) {
         if (row.last_kline_close === closeTime) {
-            return { ok: false, reason: "same_kline", remainingSec: 0 };
+            return {ok: false, reason: "same_kline", remainingSec: 0};
         }
         if (row.last_at && now - row.last_at < cooldownSec * 1000) {
             const remainingMs = row.last_at + cooldownSec * 1000 - now;
-            return { ok: false, reason: "cooldown", remainingSec: Math.ceil(remainingMs / 1000) };
+            return {ok: false, reason: "cooldown", remainingSec: Math.ceil(remainingMs / 1000)};
         }
     }
-    return { ok: true, reason: null, remainingSec: 0 };
+    return {ok: true, reason: null, remainingSec: 0};
 }
 
 function markAlertSent(symbol, reason, closeTime) {
@@ -169,7 +170,7 @@ async function alert(symbol, reason, data, config) {
         if (sender) {
             await sender(msg, provider);
         } else {
-            logger.warn({ provider }, "未知的 provider");
+            logger.warn({provider}, "未知的 provider");
         }
     }
 }
@@ -201,8 +202,8 @@ async function alertBatch(title, items, config) {
         if (typeof i.prevClose === 'number' && typeof i.closePrice === 'number' &&
             !Number.isNaN(i.prevClose) && !Number.isNaN(i.closePrice)) {
             const pctText = (typeof i.deltaPct === 'number' && !Number.isNaN(i.deltaPct))
-              ? ` (${i.deltaPct >= 0 ? '+' : ''}${formatNumber(i.deltaPct * 100)}%)`
-              : '';
+                ? ` (${i.deltaPct >= 0 ? '+' : ''}${formatNumber(i.deltaPct * 100)}%)`
+                : '';
             lines.push(`- 价格: ${formatCurrency(i.prevClose)} → ${formatCurrency(i.closePrice)}${pctText}`);
         }
         // 若无可展示的结构化字段，回退到 detailsText 的美化
@@ -227,10 +228,11 @@ async function alertBatch(title, items, config) {
         if (sender) {
             await sender(msg, provider);
         } else {
-            logger.warn({ provider }, "未知的 provider");
+            logger.warn({provider}, "未知的 provider");
         }
     }
 }
+
 // =============================================================
 
 // ========== Symbol helpers: 从合约符号映射到 supply.json 的 symbol ==========
@@ -239,6 +241,7 @@ function buildBinanceFuturesUrl(contractSymbol) {
     // Binance 会根据设备/客户端引导打开 App
     return `https://www.binance.com/en/futures/${contractSymbol}`;
 }
+
 function normalizeBaseSymbolFromContract(sym) {
     // 输入示例：ETHUSDT, 1000SHIBUSDT, BNBUPUSDT, XRPBULLUSDT
     let base = sym;
@@ -254,12 +257,12 @@ function normalizeBaseSymbolFromContract(sym) {
 // ========== Message formatting helpers ==========
 function formatNumber(n, digits = 2) {
     if (typeof n !== 'number' || isNaN(n)) return String(n);
-    return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    return n.toLocaleString(undefined, {minimumFractionDigits: digits, maximumFractionDigits: digits});
 }
 
 function formatCurrency(n, digits = 2) {
     if (typeof n !== 'number' || isNaN(n)) return String(n);
-    return `$${n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+    return `$${n.toLocaleString(undefined, {minimumFractionDigits: digits, maximumFractionDigits: digits})}`;
 }
 
 // 紧凑金额显示：$12.34K / $5.67M / $8.90B / $1.23T，保留两位小数
@@ -267,7 +270,10 @@ function formatCurrencyCompact(n, digits = 2) {
     if (typeof n !== 'number' || isNaN(n)) return String(n);
     const abs = Math.abs(n);
     const sign = n < 0 ? '-' : '';
-    const fmt = (v, suffix = '') => `${sign}$${Number(v).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}${suffix}`;
+    const fmt = (v, suffix = '') => `${sign}$${Number(v).toLocaleString(undefined, {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits
+    })}${suffix}`;
     if (abs >= 1e12) return fmt(abs / 1e12, 'T');
     if (abs >= 1e9) return fmt(abs / 1e9, 'B');
     if (abs >= 1e6) return fmt(abs / 1e6, 'M');
@@ -294,7 +300,7 @@ function buildNiceAlertMessage(symbol, reason, data = {}) {
         parts.push(`*价格*: ${formatCurrency(data.prevClose)} → ${formatCurrency(data.closePrice)} (${pct}) ${emoji}`);
     }
     // 其他字段以 key: value 形式追加（过滤已展示的键）
-    const shown = new Set(['matchedBase','lastVol','ma','volumeUsd','marketCap','ratio','trendEmoji','prevClose','closePrice','deltaPct']);
+    const shown = new Set(['matchedBase', 'lastVol', 'ma', 'volumeUsd', 'marketCap', 'ratio', 'trendEmoji', 'prevClose', 'closePrice', 'deltaPct']);
     Object.keys(data || {}).forEach(k => {
         if (shown.has(k)) return;
         const v = data[k];
@@ -321,10 +327,11 @@ function findSupplyForSymbol(supplyData, contractSymbol) {
     if (aliasMap[direct]) candidates.push(aliasMap[direct]);
 
     for (const c of candidates) {
-        if (keys[c]) return { key: c, supply: keys[c] };
+        if (keys[c]) return {key: c, supply: keys[c]};
     }
     return null;
 }
+
 // =============================================================
 
 async function monitor(config) {
@@ -335,10 +342,16 @@ async function monitor(config) {
     // 去重状态改由 SQLite 持久化
 
     const supplyCount = supplyData ? Object.keys(supplyData).length : 0;
-    logger.info({ symbols: symbols.length, cooldownSec, supplyCount, klineInterval: config.klineInterval, maWindow: config.maWindow }, "开始监控");
+    logger.info({
+        symbols: symbols.length,
+        cooldownSec,
+        supplyCount,
+        klineInterval: config.klineInterval,
+        maWindow: config.maWindow
+    }, "开始监控");
     const rule2Enabled = supplyCount >= 100; // 供给数据过少时暂时禁用规则2，避免噪声
     if (!rule2Enabled) {
-        logger.warn({ supplyCount }, "当前 supply 数据较少，本轮暂时跳过规则2（市值相关）以避免误报");
+        logger.warn({supplyCount}, "当前 supply 数据较少，本轮暂时跳过规则2（市值相关）以避免误报");
     }
 
     const rule1Hits = []; // 汇总规则1
@@ -349,11 +362,11 @@ async function monitor(config) {
         try {
             const klines = await fetchKline(sym, config.klineInterval, config.maWindow);
             if (!Array.isArray(klines)) {
-                logger.debug({ symbol: sym }, "跳过: K 线返回非数组（可能无效交易对/限流）");
+                logger.debug({symbol: sym}, "跳过: K 线返回非数组（可能无效交易对/限流）");
                 continue;
             }
             if (klines.length < config.maWindow) {
-                logger.debug({ symbol: sym, have: klines.length, need: config.maWindow }, "跳过: K 线数量不足");
+                logger.debug({symbol: sym, have: klines.length, need: config.maWindow}, "跳过: K 线数量不足");
                 continue;
             }
 
@@ -367,7 +380,7 @@ async function monitor(config) {
             const closeTime = parseInt(lastK[6]); // Binance: 索引6为收盘时间戳(ms)
             const deltaPct = (prevClose > 0) ? (closePrice - prevClose) / prevClose : 0;
             const trendEmoji = deltaPct > 0 ? '📈' : (deltaPct < 0 ? '📉' : '➖');
-            logger.debug({ symbol: sym, lastVol, ma, closePrice, prevClose, deltaPct, closeTime }, "K线计算完成");
+            logger.debug({symbol: sym, lastVol, ma, closePrice, prevClose, deltaPct, closeTime}, "K线计算完成");
 
             // 规则1: 成交量突破 MA（合并汇总）
             if (ma > 0 && lastVol >= ma * config.maVolumeMultiplier) {
@@ -385,7 +398,8 @@ async function monitor(config) {
                         if (sf && sf.supply && typeof sf.supply.circulating_supply === 'number') {
                             marketCap = closePrice * sf.supply.circulating_supply;
                         }
-                    } catch {}
+                    } catch {
+                    }
                     rule1Hits.push({
                         symbol: sym,
                         // 保留结构化数值，便于批量美化展示
@@ -404,9 +418,9 @@ async function monitor(config) {
                         closeTime,
                         reason: reason1,
                     });
-                    logger.debug({ symbol: sym, lastVol, ma }, "规则1命中（加入批量队列）");
+                    logger.debug({symbol: sym, lastVol, ma}, "规则1命中（加入批量队列）");
                 } else {
-                    logger.debug({ symbol: sym, reason: check1.reason, remainingSec: check1.remainingSec }, "规则1抑制");
+                    logger.debug({symbol: sym, reason: check1.reason, remainingSec: check1.remainingSec}, "规则1抑制");
                 }
             }
 
@@ -421,11 +435,23 @@ async function monitor(config) {
                         const reason2 = `15m成交量达到市值${config.volumeToMarketcapRatio}倍`;
                         const check2 = shouldAlert(sym, reason2, closeTime, cooldownSec);
                         if (check2.ok) {
-                            await alert(sym, reason2, { volumeUsd, marketCap, ratio: vmMultiple, deltaPct, trendEmoji, prevClose, closePrice }, config);
+                            await alert(sym, reason2, {
+                                volumeUsd,
+                                marketCap,
+                                ratio: vmMultiple,
+                                deltaPct,
+                                trendEmoji,
+                                prevClose,
+                                closePrice
+                            }, config);
                             markAlertSent(sym, reason2, closeTime);
-                            logger.info({ symbol: sym, base: supplyFound.key, volumeUsd, marketCap }, "规则2发送");
+                            logger.info({symbol: sym, base: supplyFound.key, volumeUsd, marketCap}, "规则2发送");
                         } else {
-                            logger.debug({ symbol: sym, reason: check2.reason, remainingSec: check2.remainingSec }, "规则2抑制");
+                            logger.debug({
+                                symbol: sym,
+                                reason: check2.reason,
+                                remainingSec: check2.remainingSec
+                            }, "规则2抑制");
                         }
                     }
                 } else {
@@ -436,8 +462,44 @@ async function monitor(config) {
                     }
                 }
             }
+
+            // 规则3: 市值 < 阈值 且 15m成交额 > 阈值（即时发送），独立于规则2
+            const rule3Enabled = config.rule3Enabled !== false; // 默认开启
+            if (rule3Enabled) {
+                const supplyFound = findSupplyForSymbol(supplyData, sym);
+                if (supplyFound && supplyFound.supply && supplyFound.supply.circulating_supply) {
+                    const marketCap = closePrice * supplyFound.supply.circulating_supply;
+                    const volumeUsd = lastVol * closePrice;
+                    const vmMultiple = marketCap > 0 ? (volumeUsd / marketCap) : 0;
+                    const mcThreshold = typeof config.rule3MarketCapMaxUsd === 'number' ? config.rule3MarketCapMaxUsd : 500_000_000;
+                    const volThreshold = typeof config.rule3VolumeMinUsd === 'number' ? config.rule3VolumeMinUsd : 5_000_000;
+                    if (marketCap > 0 && marketCap < mcThreshold && volumeUsd > volThreshold) {
+                        const reason3 = `市值低于${formatCurrencyCompact(mcThreshold)}且15m成交额超过${formatCurrencyCompact(volThreshold)}`;
+                        const check3 = shouldAlert(sym, reason3, closeTime, cooldownSec);
+                        if (check3.ok) {
+                            await alert(sym, reason3, {
+                                volumeUsd,
+                                marketCap,
+                                ratio: vmMultiple,
+                                deltaPct,
+                                trendEmoji,
+                                prevClose,
+                                closePrice
+                            }, config);
+                            markAlertSent(sym, reason3, closeTime);
+                            logger.info({symbol: sym, base: supplyFound.key, volumeUsd, marketCap}, "规则3发送");
+                        } else {
+                            logger.debug({
+                                symbol: sym,
+                                reason: check3.reason,
+                                remainingSec: check3.remainingSec
+                            }, "规则3抑制");
+                        }
+                    }
+                }
+            }
         } catch (err) {
-            logger.error({ symbol: sym, err: err.message }, "监控出错");
+            logger.error({symbol: sym, err: err.message}, "监控出错");
         }
 
         await new Promise((res) => setTimeout(res, 200)); // 控制速率
@@ -450,14 +512,14 @@ async function monitor(config) {
         for (const h of rule1Hits) {
             markAlertSent(h.symbol, h.reason, h.closeTime);
         }
-        logger.info({ count: rule1Hits.length }, "规则1批量发送完成");
+        logger.info({count: rule1Hits.length}, "规则1批量发送完成");
     } else {
         logger.debug("本轮无规则1批量告警需要发送");
     }
 
     if (rule2Enabled) {
         if (missingSupplyCount > 0) {
-            logger.warn({ missingSupplyCount, examples: missingSupplyExamples }, "本轮规则2跳过若干交易对（缺少 supply）");
+            logger.warn({missingSupplyCount, examples: missingSupplyExamples}, "本轮规则2跳过若干交易对（缺少 supply）");
         }
     } else {
         logger.warn("本轮规则2已禁用（supply 数据量过低）");
@@ -470,9 +532,9 @@ async function main() {
     if (config.logLevel) {
         try {
             logger.level = config.logLevel;
-            logger.info({ level: logger.level }, "日志级别由配置覆盖");
+            logger.info({level: logger.level}, "日志级别由配置覆盖");
         } catch (e) {
-            logger.warn({ level: config.logLevel }, "无效的日志级别，已忽略");
+            logger.warn({level: config.logLevel}, "无效的日志级别，已忽略");
         }
     }
     const interval = config.monitorIntervalSec * 1000;
