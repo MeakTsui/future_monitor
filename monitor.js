@@ -25,15 +25,15 @@ function beautifyDetailsText(detailsText) {
         // 优先展示 USD 成交额和市值（若存在）
         if (map.volumeUsd !== undefined) {
             const n = parseFloat(map.volumeUsd);
-            lineParts.push(`成交额(USD)=${Number.isFinite(n) ? formatCurrency(n) : map.volumeUsd}`);
+            lineParts.push(`成交额(USD)=${Number.isFinite(n) ? formatCurrencyCompact(n) : map.volumeUsd}`);
         }
         if (map.maUsd !== undefined) {
             const n = parseFloat(map.maUsd);
-            lineParts.push(`MA额(USD)=${Number.isFinite(n) ? formatCurrency(n) : map.maUsd}`);
+            lineParts.push(`MA额(USD)=${Number.isFinite(n) ? formatCurrencyCompact(n) : map.maUsd}`);
         }
         if (map.marketCap !== undefined) {
             const n = parseFloat(map.marketCap);
-            lineParts.push(`市值=${Number.isFinite(n) ? formatCurrency(n) : map.marketCap}`);
+            lineParts.push(`市值=${Number.isFinite(n) ? formatCurrencyCompact(n) : map.marketCap}`);
         }
         // 兼容旧键
         if (map.x !== undefined) {
@@ -186,13 +186,13 @@ async function alertBatch(title, items, config) {
         lines.push(`${i.trendEmoji || ''} ${link}`.trim());
         // 逐行展示关键字段
         if (typeof i.volumeUsd === 'number' && !Number.isNaN(i.volumeUsd)) {
-            lines.push(`- 成交额(USD): ${formatCurrency(i.volumeUsd)}`);
+            lines.push(`- 成交额(USD): ${formatCurrencyCompact(i.volumeUsd)}`);
         }
         if (typeof i.maUsd === 'number' && !Number.isNaN(i.maUsd)) {
-            lines.push(`- MA额(USD): ${formatCurrency(i.maUsd)}`);
+            lines.push(`- MA额(USD): ${formatCurrencyCompact(i.maUsd)}`);
         }
         if (typeof i.marketCap === 'number' && !Number.isNaN(i.marketCap)) {
-            lines.push(`- 市值: ${formatCurrency(i.marketCap)}`);
+            lines.push(`- 市值: ${formatCurrencyCompact(i.marketCap)}`);
         }
         if (typeof i.ratio === 'number' && !Number.isNaN(i.ratio)) {
             // 倍数去掉 x=
@@ -262,6 +262,19 @@ function formatCurrency(n, digits = 2) {
     return `$${n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 }
 
+// 紧凑金额显示：$12.34K / $5.67M / $8.90B / $1.23T，保留两位小数
+function formatCurrencyCompact(n, digits = 2) {
+    if (typeof n !== 'number' || isNaN(n)) return String(n);
+    const abs = Math.abs(n);
+    const sign = n < 0 ? '-' : '';
+    const fmt = (v, suffix = '') => `${sign}$${Number(v).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}${suffix}`;
+    if (abs >= 1e12) return fmt(abs / 1e12, 'T');
+    if (abs >= 1e9) return fmt(abs / 1e9, 'B');
+    if (abs >= 1e6) return fmt(abs / 1e6, 'M');
+    if (abs >= 1e3) return fmt(abs / 1e3, 'K');
+    return fmt(abs, '');
+}
+
 function buildNiceAlertMessage(symbol, reason, data = {}) {
     const link = `[${symbol}](${buildBinanceFuturesUrl(symbol)})`;
     const parts = [];
@@ -272,8 +285,8 @@ function buildNiceAlertMessage(symbol, reason, data = {}) {
     if (data.matchedBase) parts.push(`*基础币*: ${data.matchedBase}`);
     if (typeof data.lastVol === 'number') parts.push(`*成交量*: ${formatNumber(data.lastVol)}`);
     if (typeof data.ma === 'number') parts.push(`*MA*: ${formatNumber(data.ma)}`);
-    if (typeof data.volumeUsd === 'number') parts.push(`*成交量(USD)*: $${formatNumber(data.volumeUsd)}`);
-    if (typeof data.marketCap === 'number') parts.push(`*市值*: $${formatNumber(data.marketCap)}`);
+    if (typeof data.volumeUsd === 'number') parts.push(`*成交量(USD)*: ${formatCurrencyCompact(data.volumeUsd)}`);
+    if (typeof data.marketCap === 'number') parts.push(`*市值*: ${formatCurrencyCompact(data.marketCap)}`);
     if (typeof data.ratio === 'number') parts.push(`*倍数*: ${formatNumber(data.ratio)}`);
     // 价格变化（更美观）：$prev → $close (±pct%) + 表情
     if (typeof data.prevClose === 'number' && typeof data.closePrice === 'number') {
