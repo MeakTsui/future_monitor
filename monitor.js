@@ -175,46 +175,51 @@ async function alert(symbol, reason, data, config) {
 }
 
 async function alertBatch(title, items, config) {
-    // items: Array<{ symbol, lastVol?, ma?, ratio?, detailsText? }>
+    // items: Array<{ symbol, lastVol?, ma?, ratio?, volumeUsd?, maUsd?, marketCap?, prevClose?, closePrice?, deltaPct?, trendEmoji?, detailsText? }>
     if (!items || items.length === 0) return;
 
     const header = `*ALERT* [批量] ${title}（共 ${items.length} 条）`;
-    const lines = items.map(i => {
+    const blocks = items.map(i => {
         const link = `[${i.symbol}](${buildBinanceFuturesUrl(i.symbol)})`;
-        const parts = [];
-        // 数值字段按存在性添加，避免 undefined
-        if (typeof i.ratio === 'number' && !Number.isNaN(i.ratio)) {
-            parts.push(`倍数 x=${formatNumber(i.ratio)}`);
-        }
-        // 使用 USD 计价的成交额与 MA 成交额
+        const lines = [];
+        // 首行：趋势图标 + 合约链接
+        lines.push(`${i.trendEmoji || ''} ${link}`.trim());
+        // 逐行展示关键字段
         if (typeof i.volumeUsd === 'number' && !Number.isNaN(i.volumeUsd)) {
-            parts.push(`成交额(USD)=${formatCurrency(i.volumeUsd)}`);
+            lines.push(`- 成交额(USD): ${formatCurrency(i.volumeUsd)}`);
         }
         if (typeof i.maUsd === 'number' && !Number.isNaN(i.maUsd)) {
-            parts.push(`MA额(USD)=${formatCurrency(i.maUsd)}`);
+            lines.push(`- MA额(USD): ${formatCurrency(i.maUsd)}`);
         }
-        // 市值
         if (typeof i.marketCap === 'number' && !Number.isNaN(i.marketCap)) {
-            parts.push(`市值=${formatCurrency(i.marketCap)}`);
+            lines.push(`- 市值: ${formatCurrency(i.marketCap)}`);
+        }
+        if (typeof i.ratio === 'number' && !Number.isNaN(i.ratio)) {
+            // 倍数去掉 x=
+            lines.push(`- 倍数: ${formatNumber(i.ratio)}`);
         }
         if (typeof i.prevClose === 'number' && typeof i.closePrice === 'number' &&
             !Number.isNaN(i.prevClose) && !Number.isNaN(i.closePrice)) {
             const pctText = (typeof i.deltaPct === 'number' && !Number.isNaN(i.deltaPct))
               ? ` (${i.deltaPct >= 0 ? '+' : ''}${formatNumber(i.deltaPct * 100)}%)`
               : '';
-            parts.push(`价格=${formatCurrency(i.prevClose)} → ${formatCurrency(i.closePrice)}${pctText}`);
+            lines.push(`- 价格: ${formatCurrency(i.prevClose)} → ${formatCurrency(i.closePrice)}${pctText}`);
         }
-
-        let right = parts.join(' | ');
-        if (!right) {
-            right = i.detailsText ? beautifyDetailsText(i.detailsText) : '数据不足';
+        // 若无可展示的结构化字段，回退到 detailsText 的美化
+        if (lines.length <= 1) {
+            const fallback = i.detailsText ? beautifyDetailsText(i.detailsText) : '';
+            if (fallback) lines.push(`- ${fallback}`);
         }
-        return `- ${i.trendEmoji || ''} ${link}: ${right}`;
+        return lines.join('\n');
     });
 
-    let msg = `${header}\n${lines.join("\n")}`;
+    // 币种间使用分隔线
+    let body = blocks.join('\n-------\n');
+    let msg = `${header}\n${body}`;
     if (msg.length > 3500) { // 留余量，避免 Telegram 4096 限制
-        msg = `${header}\n${lines.join("\n").slice(0, 3400)}\n... 已截断，原共 ${items.length} 条`;
+        const allowed = 3400 - header.length;
+        body = body.slice(0, Math.max(0, allowed));
+        msg = `${header}\n${body}\n... 已截断，原共 ${items.length} 条`;
     }
 
     for (const provider of config.alerts) {
