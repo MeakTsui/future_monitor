@@ -4,6 +4,7 @@ import WebSocket from "ws";
 import logger from "./logger.js";
 import { getAlertState as dbGetAlertState, setAlertState as dbSetAlertState, getAllSuppliesMap } from "./db.js";
 import http from "http";
+import { dispatchAlert, buildAlertPayload } from "./alerting.js";
 
 // Config
 const CONFIG_FILE = "./config.json";
@@ -28,54 +29,7 @@ function findSupplyForSymbol(supplyMap, contractSymbol) {
   return null;
 }
 
-// Providers (reuse minimal senders)
-async function sendConsole(message) {
-  logger.info(message);
-}
-
-async function sendTelegram(message, providerConfig) {
-  const url = `https://api.telegram.org/bot${providerConfig.botToken}/sendMessage`;
-  const body = {
-    chat_id: providerConfig.chatId,
-    text: message,
-    parse_mode: "Markdown",
-    disable_web_page_preview: true,
-  };
-  try {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const result = await resp.json();
-    if (!result.ok) {
-      logger.error({ result }, "发送 Telegram 失败");
-    }
-  } catch (err) {
-    logger.error({ err: err.message }, "发送 Telegram 出错");
-  }
-}
-
-async function sendWebhook(message, providerConfig) {
-  try {
-    const resp = await fetch(providerConfig.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: message }),
-    });
-    if (!resp.ok) {
-      logger.error({ status: resp.status, text: await resp.text() }, "Webhook 推送失败");
-    }
-  } catch (err) {
-    logger.error({ err: err.message }, "Webhook 推送出错");
-  }
-}
-
-const providers = {
-  console: sendConsole,
-  telegram: sendTelegram,
-  webhook: sendWebhook,
-};
+// 发送统一走 alerting 模块（Console/Telegram 仍文本，Webhook 为结构化）
 
 // Helpers
 function formatNumber(n, digits = 2) {
@@ -151,7 +105,8 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
 
   const lines = [];
   // 标题行（不加链接，按需求显示 symbol + emoji）
-  lines.push(`‼️‼️${symbol} ${trendEmoji || ''}`.trim());
+  const link = `[${symbol}](${buildBinanceFuturesUrl(symbol)})`;
+  lines.push(`‼️‼️${link} ${trendEmoji || ''}`.trim());
   if (reasonLine) lines.push(`原因: ${reasonLine}`);
   lines.push(`成交量(USD): ${formatCurrencyCompact(sumTurnover)}`);
   if (typeof marketCap === 'number' && Number.isFinite(marketCap)) {
@@ -170,10 +125,26 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
 
   const msg = lines.join('\n');
 
-  for (const provider of (config.alerts || [])) {
-    const sender = providers[provider.provider];
-    if (sender) await sender(msg, provider);
-  }
+  // 结构化 payload（Webhook 使用，含 text 以兼容）
+  const payload = buildAlertPayload({
+    strategy: 'rule3_ws',
+    symbol,
+    reason: reasonLine,
+    windowMinutes,
+    severity: 'warning',
+    metrics: {
+      sumTurnover,
+      marketCap,
+      ratio,
+      prevClose,
+      closePrice,
+      deltaPct,
+    },
+    links: { binanceFutures: buildBinanceFuturesUrl(symbol) },
+    tags: ['ws', 'rule3'],
+  });
+
+  await dispatchAlert({ config, text: msg, payload });
 }
 
 // Exchange info
@@ -220,6 +191,8 @@ class KlineAggregator {
     this.lastClosePrice = new Map(); // symbol -> last price (may be intra-minute)
     this.lastClosedPrice = new Map(); // symbol -> last closed kline close
     this.prevClosedPrice = new Map(); // symbol -> previous closed kline close
+    // 策略插件：按需注册自定义策略，签名为 (ctx, config, helpers) => Promise<void> | void
+    this.strategies = [];
   }
 
   start(config) {
@@ -286,90 +259,14 @@ class KlineAggregator {
         const nowMs = Date.now();
         const sum = this._sumLastMinutes(symbol, nowMs, this.windowMinutes);
         if (sum >= this.thresholdUsd) {
-          const reason = `ws_rule3_${this.windowMinutes}m_${this.thresholdUsd}`;
-          // 同一分钟桶内避免重复
-          const lastSentBucket = this.lastBucketSent.get(symbol);
-          if (lastSentBucket === openTime) {
-            return; // 已在该分钟桶内触发过
-          }
-          // 可选：市值过滤
-          let marketCap, mcPass = true, supplyKey, circulating;
-          if (this.marketCapMaxUsd > 0) {
-            const sf = findSupplyForSymbol(this.supplyMap, symbol);
-            if (!sf || !sf.supply || typeof sf.supply.circulating_supply !== 'number') {
-              logger.debug({ symbol }, '规则3-WS 跳过：缺少 supply 数据，无法计算市值');
-              return;
+          const ctx = this._buildContextForStrategies({ symbol, openTime, sum, closePrice });
+          // 若已注册自定义策略，则依次执行；否则使用内置默认策略
+          if (this.strategies.length > 0) {
+            for (const fn of this.strategies) {
+              try { fn(ctx, config, this._helpers()); } catch (e) { logger.warn({ err: e.message }, '自定义策略执行异常'); }
             }
-            supplyKey = sf.key;
-            circulating = sf.supply.circulating_supply;
-            marketCap = (Number.isFinite(closePrice) ? closePrice : 0) * circulating;
-            mcPass = (marketCap > 0 && marketCap < this.marketCapMaxUsd);
-            if (!mcPass) return; // 不满足市值过滤，不触发
           } else {
-            // 未启用市值过滤也尽可能计算出市值
-            const sf = findSupplyForSymbol(this.supplyMap, symbol);
-            if (sf && sf.supply && typeof sf.supply.circulating_supply === 'number' && Number.isFinite(closePrice)) {
-              marketCap = closePrice * sf.supply.circulating_supply;
-              supplyKey = sf.key;
-              circulating = sf.supply.circulating_supply;
-            }
-          }
-
-          // 价格与趋势
-          const lastClosed = this.lastClosedPrice.get(symbol);
-          const prevClosed = this.prevClosedPrice.get(symbol);
-          let prevForDisplay = prevClosed;
-          let closeForDisplay = lastClosed;
-          let deltaPct;
-          if (Number.isFinite(lastClosed) && Number.isFinite(prevClosed) && prevClosed > 0) {
-            deltaPct = (lastClosed - prevClosed) / prevClosed;
-          } else if (Number.isFinite(lastClosed) && Number.isFinite(this.lastClosePrice.get(symbol)) && lastClosed > 0) {
-            // 退化：若缺少 prevClosed，则用当前分钟的最新价与 lastClosed 比较，提供趋势与价格行
-            const live = this.lastClosePrice.get(symbol);
-            prevForDisplay = lastClosed;
-            closeForDisplay = live;
-            if (Number.isFinite(live)) {
-              deltaPct = (live - lastClosed) / lastClosed;
-            }
-          }
-          const emoji = (typeof deltaPct === 'number') ? (deltaPct > 0 ? '📈' : (deltaPct < 0 ? '📉' : '➖')) : '';
-
-          // 先本地冷却，再DB冷却
-          const local = shouldAlertLocal(symbol, reason, this.cooldownSec);
-          if (!local.ok) {
-            logger.debug({ symbol, reason: local.reason, remainingSec: local.remainingSec }, '规则3-WS 本地冷却抑制');
-            return;
-          }
-          const check = shouldAlert(symbol, reason, this.cooldownSec);
-          if (check.ok) {
-            // 先标记（本地与DB），再异步发送，避免并发重复
-            markAlertSentLocal(symbol, reason);
-            markAlertSent(symbol, reason);
-            this.lastBucketSent.set(symbol, openTime);
-
-            // 组合原因文本与指标
-            const reasonLine = (this.marketCapMaxUsd > 0)
-              ? `市值低于${formatCurrencyCompact(this.marketCapMaxUsd)}且${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`
-              : `${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`;
-            const ratio = (typeof marketCap === 'number' && marketCap > 0) ? (sum / marketCap) : undefined;
-
-            sendAlertNow(symbol, this.windowMinutes, sum, config, {
-              reasonLine,
-              trendEmoji: emoji,
-              marketCap,
-              ratio,
-              prevClose: Number.isFinite(prevForDisplay) ? prevForDisplay : undefined,
-              closePrice: Number.isFinite(closeForDisplay) ? closeForDisplay : (Number.isFinite(closePrice) ? closePrice : undefined),
-              deltaPct
-            })
-              .then(() => {
-                logger.info({ symbol, sum, window: this.windowMinutes }, "规则3-WS 触发并发送");
-              })
-              .catch(err => {
-                logger.warn({ symbol, err: err.message }, '规则3-WS 发送失败');
-              });
-          } else {
-            logger.debug({ symbol, reason: check.reason, remainingSec: check.remainingSec }, '规则3-WS DB冷却抑制');
+            this._evaluateDefaultStrategy(ctx, config);
           }
         }
       } catch (e) {
@@ -426,6 +323,129 @@ class KlineAggregator {
       if (bucketStart >= start) sum += q || 0;
     }
     return sum;
+  }
+
+  _buildContextForStrategies({ symbol, openTime, sum, closePrice }) {
+    // 市值（如果可能）
+    let marketCap, supplyKey, circulating;
+    const sf = findSupplyForSymbol(this.supplyMap, symbol);
+    if (sf && sf.supply && typeof sf.supply.circulating_supply === 'number' && Number.isFinite(closePrice)) {
+      supplyKey = sf.key;
+      circulating = sf.supply.circulating_supply;
+      marketCap = closePrice * circulating;
+    }
+
+    // 价格与趋势
+    const lastClosed = this.lastClosedPrice.get(symbol);
+    const prevClosed = this.prevClosedPrice.get(symbol);
+    let prevForDisplay = prevClosed;
+    let closeForDisplay = lastClosed;
+    let deltaPct;
+    if (Number.isFinite(lastClosed) && Number.isFinite(prevClosed) && prevClosed > 0) {
+      deltaPct = (lastClosed - prevClosed) / prevClosed;
+    } else if (Number.isFinite(lastClosed) && Number.isFinite(this.lastClosePrice.get(symbol)) && lastClosed > 0) {
+      const live = this.lastClosePrice.get(symbol);
+      prevForDisplay = lastClosed;
+      closeForDisplay = live;
+      if (Number.isFinite(live)) {
+        deltaPct = (live - lastClosed) / lastClosed;
+      }
+    }
+    const trendEmoji = (typeof deltaPct === 'number') ? (deltaPct > 0 ? '📈' : (deltaPct < 0 ? '📉' : '➖')) : '';
+
+    return {
+      symbol,
+      openTime,
+      sumTurnover: sum,
+      closePrice,
+      marketCap,
+      supplyKey,
+      circulating,
+      lastClosed,
+      prevClosed,
+      prevForDisplay,
+      closeForDisplay,
+      deltaPct,
+      trendEmoji,
+    };
+  }
+
+  _helpers() {
+    return {
+      windowMinutes: this.windowMinutes,
+      thresholdUsd: this.thresholdUsd,
+      marketCapMaxUsd: this.marketCapMaxUsd,
+      cooldownSec: this.cooldownSec,
+      shouldAlertLocal,
+      shouldAlert,
+      markAlertSentLocal,
+      markAlertSent,
+      buildReasonLine: () => (this.marketCapMaxUsd > 0)
+        ? `市值低于${formatCurrencyCompact(this.marketCapMaxUsd)}且${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`
+        : `${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`,
+      notify: async (symbol, reasonLine, sumTurnover, config, extras = {}) => {
+        await sendAlertNow(symbol, this.windowMinutes, sumTurnover, config, { reasonLine, ...extras });
+      },
+    };
+  }
+
+  async _evaluateDefaultStrategy(ctx, config) {
+    const { symbol, openTime, sumTurnover, marketCap, prevForDisplay, closeForDisplay, deltaPct, trendEmoji, closePrice } = ctx;
+    const reason = `ws_rule3_${this.windowMinutes}m_${this.thresholdUsd}`;
+    // 同一分钟桶内避免重复
+    const lastSentBucket = this.lastBucketSent.get(symbol);
+    if (lastSentBucket === openTime) return;
+
+    // 市值过滤
+    if (this.marketCapMaxUsd > 0) {
+      if (!Number.isFinite(marketCap)) {
+        logger.debug({ symbol }, '规则3-WS 跳过：缺少 supply 数据，无法计算市值');
+        return;
+      }
+      if (!(marketCap > 0 && marketCap < this.marketCapMaxUsd)) return;
+    }
+
+    // 冷却
+    const local = shouldAlertLocal(symbol, reason, this.cooldownSec);
+    if (!local.ok) {
+      logger.debug({ symbol, reason: local.reason, remainingSec: local.remainingSec }, '规则3-WS 本地冷却抑制');
+      return;
+    }
+    const check = shouldAlert(symbol, reason, this.cooldownSec);
+    if (!check.ok) {
+      logger.debug({ symbol, reason: check.reason, remainingSec: check.remainingSec }, '规则3-WS DB冷却抑制');
+      return;
+    }
+
+    // 标记，避免并发重复
+    markAlertSentLocal(symbol, reason);
+    markAlertSent(symbol, reason);
+    this.lastBucketSent.set(symbol, openTime);
+
+    const reasonLine = (this.marketCapMaxUsd > 0)
+      ? `市值低于${formatCurrencyCompact(this.marketCapMaxUsd)}且${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`
+      : `${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`;
+    const ratio = (typeof marketCap === 'number' && marketCap > 0) ? (sumTurnover / marketCap) : undefined;
+
+    try {
+      await sendAlertNow(symbol, this.windowMinutes, sumTurnover, config, {
+        reasonLine,
+        trendEmoji,
+        marketCap,
+        ratio,
+        prevClose: Number.isFinite(prevForDisplay) ? prevForDisplay : undefined,
+        closePrice: Number.isFinite(closeForDisplay) ? closeForDisplay : (Number.isFinite(closePrice) ? closePrice : undefined),
+        deltaPct
+      });
+      logger.info({ symbol, sum: sumTurnover, window: this.windowMinutes }, "规则3-WS 触发并发送");
+    } catch (err) {
+      logger.warn({ symbol, err: err.message }, '规则3-WS 发送失败');
+    }
+  }
+
+  // 对外：注册策略
+  use(strategyFn) {
+    if (typeof strategyFn === 'function') this.strategies.push(strategyFn);
   }
 
   // 调试：返回指定 symbol 的当前计算与规则判定信息（只读，不会触发告警）
@@ -510,6 +530,12 @@ class KlineAggregator {
   }
 }
 
+function buildBinanceFuturesUrl(contractSymbol) {
+  // 直接跳转 USDT 永续合约页面
+  // Binance 会根据设备/客户端引导打开 App
+  return `https://www.binance.com/en/futures/${contractSymbol}`;
+}
+
 // 调试：启动一个简易的 HTTP 服务，提供调试信息
 function startDebugServer(agg, port = 18081) {
   const server = http.createServer((req, res) => {
@@ -580,6 +606,24 @@ async function main() {
   try { supplyMap = getAllSuppliesMap(); } catch (e) { logger.warn({ err: e.message }, '加载 supply 数据失败'); }
 
   const agg = new KlineAggregator({ symbols, windowMinutes, thresholdUsd, cooldownSec, maxPerSocket, wsBaseUrl: wsBaseUrl || undefined, heartbeatSec, rotateHours, marketCapMaxUsd, supplyMap });
+
+  // 动态加载自定义策略：config.rule3ws.wsStrategies = ["./strategies/myStrategy.js", ...]
+  const wsStrategies = Array.isArray(ruleCfg.wsStrategies) ? ruleCfg.wsStrategies : [];
+  for (const modPath of wsStrategies) {
+    try {
+      const m = await import(modPath);
+      const fn = m.default || m.strategy || m.handle || m.run;
+      if (typeof fn === 'function') {
+        agg.use(fn);
+        logger.info({ modPath }, '已注册自定义 WS 策略');
+      } else {
+        logger.warn({ modPath }, '自定义 WS 策略模块未导出函数，已跳过');
+      }
+    } catch (e) {
+      logger.warn({ modPath, err: e.message }, '加载自定义 WS 策略失败');
+    }
+  }
+
   // 启动调试接口
   startDebugServer(agg, debugPort);
   agg.start({ alerts: config.alerts });

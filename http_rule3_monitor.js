@@ -2,60 +2,14 @@ import fs from "fs";
 import fetch from "node-fetch";
 import logger from "./logger.js";
 import { getAlertState as dbGetAlertState, setAlertState as dbSetAlertState } from "./db.js";
+import { dispatchAlert, buildAlertPayload } from "./alerting.js";
 
 const CONFIG_FILE = "./config.json";
 function loadConfig() {
   return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
 }
 
-// Providers (reuse minimal senders)
-async function sendConsole(message) {
-  logger.info(message);
-}
-
-async function sendTelegram(message, providerConfig) {
-  const url = `https://api.telegram.org/bot${providerConfig.botToken}/sendMessage`;
-  const body = {
-    chat_id: providerConfig.chatId,
-    text: message,
-    parse_mode: "Markdown",
-    disable_web_page_preview: true,
-  };
-  try {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const result = await resp.json();
-    if (!result.ok) {
-      logger.error({ result }, "发送 Telegram 失败");
-    }
-  } catch (err) {
-    logger.error({ err: err.message }, "发送 Telegram 出错");
-  }
-}
-
-async function sendWebhook(message, providerConfig) {
-  try {
-    const resp = await fetch(providerConfig.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: message }),
-    });
-    if (!resp.ok) {
-      logger.error({ status: resp.status, text: await resp.text() }, "Webhook 推送失败");
-    }
-  } catch (err) {
-    logger.error({ err: err.message }, "Webhook 推送出错");
-  }
-}
-
-const providers = {
-  console: sendConsole,
-  telegram: sendTelegram,
-  webhook: sendWebhook,
-};
+// 发送统一经 alerting 模块（Console/Telegram 文本，Webhook 结构化）
 
 // Helpers
 function formatNumber(n, digits = 2) {
@@ -109,10 +63,18 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config) {
     `*成交额*: ${formatCurrencyCompact(sumTurnover)}`,
   ].join('\n');
 
-  for (const provider of (config.alerts || [])) {
-    const sender = providers[provider.provider];
-    if (sender) await sender(msg, provider);
-  }
+  const payload = buildAlertPayload({
+    strategy: 'rule3_http',
+    symbol,
+    reason: `过去${windowMinutes}分钟成交额超阈值`,
+    windowMinutes,
+    severity: 'warning',
+    metrics: { sumTurnover },
+    links: { binanceFutures: buildBinanceFuturesUrl(symbol) },
+    tags: ['http', 'rule3'],
+  });
+
+  await dispatchAlert({ config, text: msg, payload });
 }
 
 // Exchange info

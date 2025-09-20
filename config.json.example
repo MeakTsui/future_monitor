@@ -7,6 +7,29 @@
   "maWindow": 7,
   "alertCooldownSec": 300,
   "logLevel": "info",
+  "rule3ws": {
+    "windowMinutes": 5,
+    "turnoverUsdThreshold": 5000000,
+    "cooldownSec": 1800,
+    "maxPerSocket": 80,
+    "heartbeatSec": 120,
+    "rotateHours": 23,
+    "marketCapMaxUsd": 500000000,
+    "debugPort": 18081,
+    "maxSymbols": 60,
+    "wsStrategies": [
+      "./strategies/sample_strategy.js"
+    ]
+  },
+  "rule3http": {
+    "windowMinutes": 5,
+    "turnoverUsdThreshold": 5000000,
+    "cooldownSec": 1800,
+    "pollIntervalSec": 5,
+    "batchSize": 30,
+    "parallelism": 5,
+    "maxSymbols": 200
+  },
   "alerts": [
     {
       "provider": "console"
@@ -15,6 +38,10 @@
       "provider": "telegram",
       "botToken": "",
       "chatId": ""
+    },
+    {
+      "provider": "webhook",
+      "url": "http://localhost:9000/webhook"
     }
   ]
 }
