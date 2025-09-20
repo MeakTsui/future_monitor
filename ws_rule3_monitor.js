@@ -530,12 +530,6 @@ class KlineAggregator {
   }
 }
 
-function buildBinanceFuturesUrl(contractSymbol) {
-  // 直接跳转 USDT 永续合约页面
-  // Binance 会根据设备/客户端引导打开 App
-  return `https://www.binance.com/en/futures/${contractSymbol}`;
-}
-
 // 调试：启动一个简易的 HTTP 服务，提供调试信息
 function startDebugServer(agg, port = 18081) {
   const server = http.createServer((req, res) => {
