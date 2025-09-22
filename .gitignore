@@ -30,5 +30,5 @@ coverage/
 # Misc
 *.swp
 *.swo
-
+.sqlite
 config.json
