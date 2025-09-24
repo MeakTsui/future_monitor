@@ -223,6 +223,32 @@ export default function strategy(ctx, config, helpers) { /* ... */ }
 
 ---
 
+# Payload 字段说明（重要）
+
+派发到 Webhook 的结构化载荷由 `buildAlertPayload()` 生成，核心字段：
+
+- `strategy`：策略标识（已重构为具体策略名，而非固定 `rule3_ws`）。示例：
+  - 默认规则3：`"5m_turnover"`（取决于 `windowMinutes`）
+  - 三分钟成交额策略：`"3m_turnover"`
+  - 自定义样例：`"custom_over2x_5m"`
+- `symbol`：交易对，例如 `BTCUSDT`
+- `reason`：触发原因（人类可读）
+- `windowMinutes`：滚动窗口分钟数
+- `severity`：`info | warning | critical`（当前为 `warning`）
+- `metrics`：结构化指标，如 `sumTurnover, marketCap, ratio, prevClose, closePrice, deltaPct`
+- `links`：外链，如 `binanceFutures`
+- `tags`：标签数组，如 `['ws','rule3']`
+
+在策略插件里通过 `helpers.notify(..., options)` 传入 `options.strategy` 指定策略标识：
+
+```js
+await helpers.notify(symbol, reasonLine, sumTurnover, { alerts: config.alerts }, extras, {
+  strategy: '3m_turnover'
+});
+```
+
+默认（未显式传入）时会回退为 `ws_rule3` 以保持向后兼容。
+
 # Future Monitor
 
 This repository monitors Binance Futures markets and emits alerts based on rolling turnover windows and custom WS strategies.

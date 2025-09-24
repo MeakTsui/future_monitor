@@ -47,5 +47,5 @@ export default async function rule3Default(ctx, config, helpers) {
     prevClose: Number.isFinite(prevForDisplay) ? prevForDisplay : undefined,
     closePrice: Number.isFinite(closeForDisplay) ? closeForDisplay : (Number.isFinite(closePrice) ? closePrice : undefined),
     deltaPct
-  });
+  }, { strategy: `${helpers.windowMinutes}m_turnover` });
 }

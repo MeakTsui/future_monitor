@@ -69,7 +69,7 @@ function markAlertSentLocal(symbol, reason) {
   inMemoryCooldown.set(key, Date.now());
 }
 
-async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras = {}) {
+async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras = {}, options = {}) {
   const {
     reasonLine, // 例如: 市值低于$500.00M且15m成交额超过$5.00M
     trendEmoji, // 📈/📉/➖
@@ -81,10 +81,11 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
   } = extras;
 
   const msg = buildDefaultText({ symbol, reasonLine, sumTurnover, marketCap, ratio, prevClose, closePrice, deltaPct, trendEmoji });
+  const strategyId = (options && options.strategy) || 'ws_rule3';
 
   // 结构化 payload（Webhook 使用，含 text 以兼容）
   const payload = buildAlertPayload({
-    strategy: 'rule3_ws',
+    strategy: strategyId,
     symbol,
     reason: reasonLine,
     windowMinutes,
@@ -338,7 +339,7 @@ class KlineAggregator {
         : `${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`,
       notify: async (symbol, reasonLine, sumTurnover, config, extras = {}, options = {}) => {
         const wm = typeof options.windowMinutes === 'number' ? options.windowMinutes : this.windowMinutes;
-        await sendAlertNow(symbol, wm, sumTurnover, config, { reasonLine, ...extras });
+        await sendAlertNow(symbol, wm, sumTurnover, config, { reasonLine, ...extras }, options);
       },
     };
   }

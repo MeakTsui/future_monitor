@@ -56,5 +56,5 @@ export default async function threeMinTurnoverStrategy(ctx, config, helpers) {
     prevClose: prevForDisplay,
     closePrice: closeForDisplay,
     deltaPct: ctx.deltaPct,
-  });
+  }, { strategy: '3m_turnover' });
 }

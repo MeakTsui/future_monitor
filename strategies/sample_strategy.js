@@ -31,5 +31,5 @@ export default async function sampleStrategy(ctx, config, helpers) {
     prevClose: Number.isFinite(prevForDisplay) ? prevForDisplay : undefined,
     closePrice: Number.isFinite(closeForDisplay) ? closeForDisplay : (Number.isFinite(closePrice) ? closePrice : undefined),
     deltaPct
-  });
+  }, { strategy: `custom_over2x_${helpers.windowMinutes}m` });
 }
