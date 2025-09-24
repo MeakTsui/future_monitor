@@ -10,6 +10,30 @@
 
 const lastBucketSent = new Map(); // symbol -> last openTime used to avoid duplicates per minute
 
+function buildStrategyText(ctx, reasonLine, helpers) {
+  const { symbol, sumTurnover, marketCap, prevForDisplay, closeForDisplay, deltaPct, trendEmoji, closePrice } = ctx;
+  const { formatNumber, formatCurrency, formatCurrencyCompact, buildBinanceFuturesUrl } = helpers;
+  const lines = [];
+  const link = `[${symbol}](${buildBinanceFuturesUrl(symbol)})`;
+  const prefixEmoji = '⚡️'; // 3m 策略前缀
+  lines.push(`${prefixEmoji} ${link} ${trendEmoji || ''}`.trim());
+  if (reasonLine) lines.push(`原因: ${reasonLine}`);
+  lines.push(`成交量(USD): ${formatCurrencyCompact(sumTurnover)}`);
+  if (Number.isFinite(marketCap)) lines.push(`市值: ${formatCurrencyCompact(marketCap)}`);
+  if (Number.isFinite(marketCap) && marketCap > 0) {
+    const ratio = sumTurnover / marketCap;
+    const digits = ratio < 0.01 ? 4 : 2;
+    lines.push(`倍数: ${formatNumber(ratio, digits)}`);
+  }
+  const prev = Number.isFinite(prevForDisplay) ? prevForDisplay : undefined;
+  const close = Number.isFinite(closeForDisplay) ? closeForDisplay : (Number.isFinite(closePrice) ? closePrice : undefined);
+  if (typeof prev === 'number' && typeof close === 'number') {
+    const pctText = (typeof deltaPct === 'number' && Number.isFinite(deltaPct)) ? ` (${deltaPct >= 0 ? '+' : ''}${formatNumber(deltaPct * 100)}%)` : '';
+    lines.push(`价格: ${formatCurrency(prev)} → ${formatCurrency(close)}${pctText} ${trendEmoji || ''}`.trim());
+  }
+  return lines.join('\n');
+}
+
 export default async function threeMinTurnoverStrategy(ctx, config, helpers) {
   const opts = (config && config.rule3ws && config.rule3ws.custom3m) || {};
   if (opts.enabled === false) return;
@@ -49,6 +73,7 @@ export default async function threeMinTurnoverStrategy(ctx, config, helpers) {
   const ratio = marketCap > 0 ? (sum3 / marketCap) : undefined;
   const reasonLine = `3m成交额超过$${(turnoverMinUsd/1_000_000).toFixed(2)}M且市值低于$${(capMaxUsd/1_000_000).toFixed(2)}M`;
 
+  const text = buildStrategyText(ctx, reasonLine, helpers);
   await helpers.notify(symbol, reasonLine, sum3, { alerts: config.alerts }, {
     trendEmoji,
     marketCap,
@@ -56,5 +81,5 @@ export default async function threeMinTurnoverStrategy(ctx, config, helpers) {
     prevClose: prevForDisplay,
     closePrice: closeForDisplay,
     deltaPct: ctx.deltaPct,
-  }, { strategy: '3m_turnover' });
+  }, { strategy: '3m_turnover', text });
 }

@@ -80,7 +80,9 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
     deltaPct,   // number | undefined (0.0158 表示 +1.58%)
   } = extras;
 
-  const msg = buildDefaultText({ symbol, reasonLine, sumTurnover, marketCap, ratio, prevClose, closePrice, deltaPct, trendEmoji });
+  const msg = (options && typeof options.text === 'string' && options.text.trim().length > 0)
+    ? options.text
+    : buildDefaultText({ symbol, reasonLine, sumTurnover, marketCap, ratio, prevClose, closePrice, deltaPct, trendEmoji });
   const strategyId = (options && options.strategy) || 'ws_rule3';
 
   // 结构化 payload（Webhook 使用，含 text 以兼容）
@@ -329,6 +331,12 @@ class KlineAggregator {
       thresholdUsd: this.thresholdUsd,
       marketCapMaxUsd: this.marketCapMaxUsd,
       cooldownSec: this.cooldownSec,
+      // formatting helpers for strategies to build custom text
+      formatNumber,
+      formatCurrency,
+      formatCurrencyCompact,
+      buildDefaultText,
+      buildBinanceFuturesUrl,
       shouldAlertLocal,
       shouldAlert,
       markAlertSentLocal,
