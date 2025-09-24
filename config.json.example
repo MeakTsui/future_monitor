@@ -18,7 +18,14 @@
     "debugPort": 18081,
     "maxSymbols": 60,
     "wsStrategies": [
-      "./strategies/sample_strategy.js"
+      "./strategies/sample_strategy.js",
+      "./strategies/three_min_turnover.js"
+    ],
+    "custom3m": {
+      "enabled": true,
+      "turnoverMinUsd": 1000000,
+      "marketCapMaxUsd": 500000000,
+      "cooldownSec": 1800
     ]
   },
   "rule3http": {

@@ -4,7 +4,7 @@ import WebSocket from "ws";
 import logger from "./logger.js";
 import { getAlertState as dbGetAlertState, setAlertState as dbSetAlertState, getAllSuppliesMap } from "./db.js";
 import http from "http";
-import { dispatchAlert, buildAlertPayload } from "./alerting.js";
+import { dispatchAlert, buildAlertPayload, buildDefaultText, formatNumber, formatCurrency, formatCurrencyCompact, buildBinanceFuturesUrl } from "./alerting/index.js";
 
 // Config
 const CONFIG_FILE = "./config.json";
@@ -31,30 +31,7 @@ function findSupplyForSymbol(supplyMap, contractSymbol) {
 
 // 发送统一走 alerting 模块（Console/Telegram 仍文本，Webhook 为结构化）
 
-// Helpers
-function formatNumber(n, digits = 2) {
-  if (typeof n !== "number" || isNaN(n)) return String(n);
-  return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
-}
-function formatCurrency(n, digits = 2) {
-  if (typeof n !== "number" || isNaN(n)) return String(n);
-  return `$${n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
-}
-function formatCurrencyCompact(n, digits = 2) {
-  if (typeof n !== "number" || isNaN(n)) return String(n);
-  const abs = Math.abs(n);
-  const sign = n < 0 ? '-' : '';
-  const fmt = (v, suffix = '') => `${sign}$${Number(v).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}${suffix}`;
-  if (abs >= 1e12) return fmt(abs / 1e12, 'T');
-  if (abs >= 1e9) return fmt(abs / 1e9, 'B');
-  if (abs >= 1e6) return fmt(abs / 1e6, 'M');
-  if (abs >= 1e3) return fmt(abs / 1e3, 'K');
-  return fmt(abs, '');
-}
-
-function buildBinanceFuturesUrl(contractSymbol) {
-  return `https://www.binance.com/en/futures/${contractSymbol}`;
-}
+// Helpers moved to alerting/format.js
 
 // Cooldown & dedupe
 function makeAlertKey(symbol, reason) {
@@ -103,27 +80,7 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
     deltaPct,   // number | undefined (0.0158 表示 +1.58%)
   } = extras;
 
-  const lines = [];
-  // 标题行（不加链接，按需求显示 symbol + emoji）
-  const link = `[${symbol}](${buildBinanceFuturesUrl(symbol)})`;
-  lines.push(`‼️‼️${link} ${trendEmoji || ''}`.trim());
-  if (reasonLine) lines.push(`原因: ${reasonLine}`);
-  lines.push(`成交量(USD): ${formatCurrencyCompact(sumTurnover)}`);
-  if (typeof marketCap === 'number' && Number.isFinite(marketCap)) {
-    lines.push(`市值: ${formatCurrencyCompact(marketCap)}`);
-  }
-  if (typeof ratio === 'number' && Number.isFinite(ratio)) {
-    const digits = ratio < 0.01 ? 4 : 2; // 很小的倍数用更高精度
-    lines.push(`倍数: ${formatNumber(ratio, digits)}`);
-  }
-  if (typeof prevClose === 'number' && Number.isFinite(prevClose) && typeof closePrice === 'number' && Number.isFinite(closePrice)) {
-    const pctText = (typeof deltaPct === 'number' && Number.isFinite(deltaPct))
-      ? ` (${deltaPct >= 0 ? '+' : ''}${formatNumber(deltaPct * 100)}%)`
-      : '';
-    lines.push(`价格: ${formatCurrency(prevClose)} → ${formatCurrency(closePrice)}${pctText} ${trendEmoji || ''}`.trim());
-  }
-
-  const msg = lines.join('\n');
+  const msg = buildDefaultText({ symbol, reasonLine, sumTurnover, marketCap, ratio, prevClose, closePrice, deltaPct, trendEmoji });
 
   // 结构化 payload（Webhook 使用，含 text 以兼容）
   const payload = buildAlertPayload({
@@ -162,7 +119,7 @@ async function fetchFuturesSymbols(restBaseUrl) {
       logger.warn({ url }, "exchangeInfo 返回异常结构");
       return [];
     }
-    return data.symbols.filter(s => s.contractType === "PERPETUAL" && /USDT$/.test(s.symbol)).map(s => s.symbol);
+    return data.symbols.filter(s => s.contractType === "PERPETUAL" && s.quoteAsset === 'USDT').map(s => s.symbol);
   } catch (e) {
     logger.warn({ url, err: e.message }, "获取 exchangeInfo 异常");
     return [];
@@ -233,7 +190,7 @@ class KlineAggregator {
       }, lifeMs);
     });
 
-    ws.on("message", (data) => {
+    ws.on("message", async (data) => {
       try {
         const msg = JSON.parse(data);
         if (!msg || !msg.data || !msg.data.k) return;
@@ -260,13 +217,8 @@ class KlineAggregator {
         const sum = this._sumLastMinutes(symbol, nowMs, this.windowMinutes);
         if (sum >= this.thresholdUsd) {
           const ctx = this._buildContextForStrategies({ symbol, openTime, sum, closePrice });
-          // 若已注册自定义策略，则依次执行；否则使用内置默认策略
-          if (this.strategies.length > 0) {
-            for (const fn of this.strategies) {
-              try { fn(ctx, config, this._helpers()); } catch (e) { logger.warn({ err: e.message }, '自定义策略执行异常'); }
-            }
-          } else {
-            this._evaluateDefaultStrategy(ctx, config);
+          for (const fn of this.strategies) {
+            try { fn(ctx, config, this._helpers()); } catch (e) { logger.warn({ err: e.message }, '自定义策略执行异常'); }
           }
         }
       } catch (e) {
@@ -380,67 +332,15 @@ class KlineAggregator {
       shouldAlert,
       markAlertSentLocal,
       markAlertSent,
+      getSumLastMinutes: (symbol, minutes) => this._sumLastMinutes(symbol, Date.now(), minutes),
       buildReasonLine: () => (this.marketCapMaxUsd > 0)
         ? `市值低于${formatCurrencyCompact(this.marketCapMaxUsd)}且${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`
         : `${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`,
-      notify: async (symbol, reasonLine, sumTurnover, config, extras = {}) => {
-        await sendAlertNow(symbol, this.windowMinutes, sumTurnover, config, { reasonLine, ...extras });
+      notify: async (symbol, reasonLine, sumTurnover, config, extras = {}, options = {}) => {
+        const wm = typeof options.windowMinutes === 'number' ? options.windowMinutes : this.windowMinutes;
+        await sendAlertNow(symbol, wm, sumTurnover, config, { reasonLine, ...extras });
       },
     };
-  }
-
-  async _evaluateDefaultStrategy(ctx, config) {
-    const { symbol, openTime, sumTurnover, marketCap, prevForDisplay, closeForDisplay, deltaPct, trendEmoji, closePrice } = ctx;
-    const reason = `ws_rule3_${this.windowMinutes}m_${this.thresholdUsd}`;
-    // 同一分钟桶内避免重复
-    const lastSentBucket = this.lastBucketSent.get(symbol);
-    if (lastSentBucket === openTime) return;
-
-    // 市值过滤
-    if (this.marketCapMaxUsd > 0) {
-      if (!Number.isFinite(marketCap)) {
-        logger.debug({ symbol }, '规则3-WS 跳过：缺少 supply 数据，无法计算市值');
-        return;
-      }
-      if (!(marketCap > 0 && marketCap < this.marketCapMaxUsd)) return;
-    }
-
-    // 冷却
-    const local = shouldAlertLocal(symbol, reason, this.cooldownSec);
-    if (!local.ok) {
-      logger.debug({ symbol, reason: local.reason, remainingSec: local.remainingSec }, '规则3-WS 本地冷却抑制');
-      return;
-    }
-    const check = shouldAlert(symbol, reason, this.cooldownSec);
-    if (!check.ok) {
-      logger.debug({ symbol, reason: check.reason, remainingSec: check.remainingSec }, '规则3-WS DB冷却抑制');
-      return;
-    }
-
-    // 标记，避免并发重复
-    markAlertSentLocal(symbol, reason);
-    markAlertSent(symbol, reason);
-    this.lastBucketSent.set(symbol, openTime);
-
-    const reasonLine = (this.marketCapMaxUsd > 0)
-      ? `市值低于${formatCurrencyCompact(this.marketCapMaxUsd)}且${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`
-      : `${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`;
-    const ratio = (typeof marketCap === 'number' && marketCap > 0) ? (sumTurnover / marketCap) : undefined;
-
-    try {
-      await sendAlertNow(symbol, this.windowMinutes, sumTurnover, config, {
-        reasonLine,
-        trendEmoji,
-        marketCap,
-        ratio,
-        prevClose: Number.isFinite(prevForDisplay) ? prevForDisplay : undefined,
-        closePrice: Number.isFinite(closeForDisplay) ? closeForDisplay : (Number.isFinite(closePrice) ? closePrice : undefined),
-        deltaPct
-      });
-      logger.info({ symbol, sum: sumTurnover, window: this.windowMinutes }, "规则3-WS 触发并发送");
-    } catch (err) {
-      logger.warn({ symbol, err: err.message }, '规则3-WS 发送失败');
-    }
   }
 
   // 对外：注册策略
@@ -618,9 +518,23 @@ async function main() {
     }
   }
 
+  // 若未配置任何策略，则默认加载内置规则3策略插件
+  if (!wsStrategies || wsStrategies.length === 0) {
+    try {
+      const m = await import('./strategies/rule3_default.js');
+      const fn = m.default || m.strategy || m.handle || m.run;
+      if (typeof fn === 'function') {
+        agg.use(fn);
+        logger.info('已加载默认 WS 规则3策略插件');
+      }
+    } catch (e) {
+      logger.warn({ err: e.message }, '加载默认 WS 规则3策略插件失败');
+    }
+  }
+
   // 启动调试接口
   startDebugServer(agg, debugPort);
-  agg.start({ alerts: config.alerts });
+  agg.start({ alerts: config.alerts, rule3ws: ruleCfg });
 }
 
 main().catch(err => {
