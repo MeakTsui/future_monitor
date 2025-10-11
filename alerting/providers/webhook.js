@@ -87,32 +87,32 @@ export default async function sendWebhook({ text, payload, providerConfig, conte
     const sep = url.includes('?') ? '&' : '?';
     url = `${url}${sep}${sp.toString()}`;
   }
-
   let body;
-  const baseCtx = { text, payload, context };
-  if (bodyMode === 'raw') {
-    const raw = rawBodyTemplate ? interpolateString(rawBodyTemplate, baseCtx) : (includeText ? text : '');
-    body = raw;
-  } else if (bodyMode === 'form') {
-    const form = new URLSearchParams();
-    if (includeText) form.append(textKey, text);
-    if (includePayload) form.append(payloadKey, JSON.stringify(payload));
-    if (bodyTemplate && typeof bodyTemplate === 'object') {
-      const t = interpolateTemplate(bodyTemplate, baseCtx);
-      for (const [k, v] of Object.entries(t)) form.append(k, String(v));
+  if (method !== 'GET' && method !== 'HEAD') {
+    const baseCtx = { text, payload, context };
+    if (bodyMode === 'raw') {
+      const raw = rawBodyTemplate ? interpolateString(rawBodyTemplate, baseCtx) : (includeText ? text : '');
+      body = raw;
+    } else if (bodyMode === 'form') {
+      const form = new URLSearchParams();
+      if (includeText) form.append(textKey, text);
+      if (includePayload) form.append(payloadKey, JSON.stringify(payload));
+      if (bodyTemplate && typeof bodyTemplate === 'object') {
+        const t = interpolateTemplate(bodyTemplate, baseCtx);
+        for (const [k, v] of Object.entries(t)) form.append(k, String(v));
+      }
+      body = form.toString();
+    } else { // json
+      const obj = {};
+      if (includeText) obj[textKey] = text;
+      if (includePayload) obj[payloadKey] = payload;
+      if (bodyTemplate && typeof bodyTemplate === 'object') {
+        const t = interpolateTemplate(bodyTemplate, baseCtx);
+        Object.assign(obj, t);
+      }
+      body = JSON.stringify(obj);
     }
-    body = form.toString();
-  } else { // json
-    const obj = {};
-    if (includeText) obj[textKey] = text;
-    if (includePayload) obj[payloadKey] = payload;
-    if (bodyTemplate && typeof bodyTemplate === 'object') {
-      const t = interpolateTemplate(bodyTemplate, baseCtx);
-      Object.assign(obj, t);
-    }
-    body = JSON.stringify(obj);
   }
-
   try {
     const resp = await fetch(url, { method, headers, body });
     if (!resp.ok) {
