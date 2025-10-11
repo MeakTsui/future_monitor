@@ -86,6 +86,10 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
   const strategyId = (options && options.strategy) || 'ws_rule3';
 
   // 结构化 payload（Webhook 使用，含 text 以兼容）
+  // 计算流通市值(百万U)并保留两位小数，示例：123.45 代表约1.2345e8 U
+  const u = (typeof marketCap === 'number' && Number.isFinite(marketCap))
+    ? Number((marketCap / 1_000_000).toFixed(2))
+    : undefined;
   const payload = buildAlertPayload({
     strategy: strategyId,
     symbol,
@@ -95,6 +99,7 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
     metrics: {
       sumTurnover,
       marketCap,
+      u,
       ratio,
       prevClose,
       closePrice,
