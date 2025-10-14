@@ -7,6 +7,9 @@
   "maWindow": 7,
   "alertCooldownSec": 300,
   "logLevel": "info",
+  marketState: {
+      aggressiveThreshold: 65
+  },
   "rule3ws": {
     "windowMinutes": 5,
     "turnoverUsdThreshold": 5000000,

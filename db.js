@@ -39,6 +39,48 @@ CREATE TABLE IF NOT EXISTS sync_state (
   state TEXT,
   updated_at TEXT
 );
+ CREATE TABLE IF NOT EXISTS market_state_minute (
+   ts_minute INTEGER PRIMARY KEY,
+   total_score REAL,
+   state TEXT,
+   details_version INTEGER,
+   created_at TEXT
+ );
+ CREATE TABLE IF NOT EXISTS market_state_symbol_minute (
+   id INTEGER PRIMARY KEY AUTOINCREMENT,
+   ts_minute INTEGER,
+   symbol TEXT,
+   price_score REAL,
+   vol_score REAL,
+   symbol_score REAL,
+   weight REAL,
+   latest_price REAL,
+   min_price_5m REAL,
+   vol_5m REAL,
+   avg_vol_5m_5h REAL,
+   created_at TEXT,
+   UNIQUE(ts_minute, symbol)
+ );
+ CREATE TABLE IF NOT EXISTS universe_selection_daily (
+   date TEXT PRIMARY KEY,
+   symbols_ranked TEXT,
+   selected_51_130 TEXT,
+   created_at TEXT
+ );
+ CREATE TABLE IF NOT EXISTS market_avg_vol_5m_5h_hourly (
+   id INTEGER PRIMARY KEY AUTOINCREMENT,
+   ts_hour INTEGER,
+   symbol TEXT,
+   avg_vol_5m_5h REAL,
+   created_at TEXT,
+   UNIQUE(ts_hour, symbol)
+ );
+ CREATE TABLE IF NOT EXISTS universe_selection_snapshot (
+   ts_period INTEGER PRIMARY KEY,
+   symbols_ranked TEXT,
+   selected_51_130 TEXT,
+   created_at TEXT
+ );
 `);
 
 // Supplies API
@@ -101,6 +143,116 @@ export function setSyncState(name, state) {
     VALUES (?, ?, ?)
     ON CONFLICT(name) DO UPDATE SET state=excluded.state, updated_at=excluded.updated_at`);
   stmt.run(name, json, new Date().toISOString());
+}
+
+// Market state APIs
+export function upsertMarketStateMinute({ ts_minute, total_score, state, details_version = 1 }) {
+  const stmt = db.prepare(`INSERT INTO market_state_minute (ts_minute, total_score, state, details_version, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(ts_minute) DO UPDATE SET total_score=excluded.total_score, state=excluded.state, details_version=excluded.details_version`);
+  stmt.run(ts_minute, total_score, state, details_version, new Date().toISOString());
+}
+
+export function upsertMarketStateSymbolMinute(row) {
+  const stmt = db.prepare(`INSERT INTO market_state_symbol_minute (
+      ts_minute, symbol, price_score, vol_score, symbol_score, weight,
+      latest_price, min_price_5m, vol_5m, avg_vol_5m_5h, created_at
+    ) VALUES (
+      @ts_minute, @symbol, @price_score, @vol_score, @symbol_score, @weight,
+      @latest_price, @min_price_5m, @vol_5m, @avg_vol_5m_5h, @created_at
+    )
+    ON CONFLICT(ts_minute, symbol) DO UPDATE SET
+      price_score=excluded.price_score,
+      vol_score=excluded.vol_score,
+      symbol_score=excluded.symbol_score,
+      weight=excluded.weight,
+      latest_price=excluded.latest_price,
+      min_price_5m=excluded.min_price_5m,
+      vol_5m=excluded.vol_5m,
+      avg_vol_5m_5h=excluded.avg_vol_5m_5h`);
+  const payload = { ...row, created_at: row.created_at || new Date().toISOString() };
+  stmt.run(payload);
+}
+
+export function getLatestMarketState() {
+  const row = db.prepare('SELECT * FROM market_state_minute ORDER BY ts_minute DESC LIMIT 1').get();
+  return row || null;
+}
+
+export function getMarketStateHistory(from, to, limit = 1000) {
+  if (from && to) {
+    return db.prepare('SELECT * FROM market_state_minute WHERE ts_minute >= ? AND ts_minute <= ? ORDER BY ts_minute ASC LIMIT ?')
+      .all(from, to, limit);
+  }
+  if (from) {
+    return db.prepare('SELECT * FROM market_state_minute WHERE ts_minute >= ? ORDER BY ts_minute ASC LIMIT ?')
+      .all(from, limit);
+  }
+  return db.prepare('SELECT * FROM market_state_minute ORDER BY ts_minute ASC LIMIT ?').all(limit);
+}
+
+export function getMarketStateDetails(ts_minute) {
+  return db.prepare('SELECT * FROM market_state_symbol_minute WHERE ts_minute = ? ORDER BY symbol ASC').all(ts_minute);
+}
+
+// Daily universe APIs
+export function getUniverseByDate(date) {
+  const row = db.prepare('SELECT * FROM universe_selection_daily WHERE date = ?').get(date);
+  if (!row) return null;
+  return {
+    date: row.date,
+    symbols_ranked: safeJSON(row.symbols_ranked, []),
+    selected_51_130: safeJSON(row.selected_51_130, []),
+    created_at: row.created_at,
+  };
+}
+
+export function saveUniverse({ date, symbols_ranked, selected_51_130 }) {
+  const stmt = db.prepare(`INSERT INTO universe_selection_daily (date, symbols_ranked, selected_51_130, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(date) DO UPDATE SET symbols_ranked=excluded.symbols_ranked, selected_51_130=excluded.selected_51_130`);
+  stmt.run(date, JSON.stringify(symbols_ranked || []), JSON.stringify(selected_51_130 || []), new Date().toISOString());
+}
+
+function safeJSON(s, d) {
+  try { return JSON.parse(s); } catch { return d; }
+}
+
+// Hourly avg_vol_5m_5h APIs
+export function upsertAvgVolHourly({ ts_hour, symbol, avg_vol_5m_5h }) {
+  const stmt = db.prepare(`INSERT INTO market_avg_vol_5m_5h_hourly (ts_hour, symbol, avg_vol_5m_5h, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(ts_hour, symbol) DO UPDATE SET avg_vol_5m_5h=excluded.avg_vol_5m_5h`);
+  stmt.run(ts_hour, symbol, avg_vol_5m_5h, new Date().toISOString());
+}
+
+export function getAvgVolMapForLatestHourBefore(ts_minute) {
+  const row = db.prepare('SELECT MAX(ts_hour) AS ts_hour FROM market_avg_vol_5m_5h_hourly WHERE ts_hour <= ?').get(ts_minute);
+  if (!row || !row.ts_hour) return { ts_hour: null, map: {} };
+  const tsHour = row.ts_hour;
+  const rows = db.prepare('SELECT symbol, avg_vol_5m_5h FROM market_avg_vol_5m_5h_hourly WHERE ts_hour = ?').all(tsHour);
+  const map = {};
+  for (const r of rows) map[r.symbol] = r.avg_vol_5m_5h;
+  return { ts_hour: tsHour, map };
+}
+
+// Universe snapshot APIs
+export function saveUniverseSnapshot({ ts_period, symbols_ranked, selected_51_130 }) {
+  const stmt = db.prepare(`INSERT INTO universe_selection_snapshot (ts_period, symbols_ranked, selected_51_130, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(ts_period) DO UPDATE SET symbols_ranked=excluded.symbols_ranked, selected_51_130=excluded.selected_51_130`);
+  stmt.run(ts_period, JSON.stringify(symbols_ranked || []), JSON.stringify(selected_51_130 || []), new Date().toISOString());
+}
+
+export function getLatestUniverseSnapshotBefore(ts_minute) {
+  const row = db.prepare('SELECT MAX(ts_period) AS ts_period FROM universe_selection_snapshot WHERE ts_period <= ?').get(ts_minute);
+  if (!row || !row.ts_period) return { ts_period: null, selected_51_130: [], symbols_ranked: [] };
+  const snap = db.prepare('SELECT symbols_ranked, selected_51_130 FROM universe_selection_snapshot WHERE ts_period = ?').get(row.ts_period);
+  return {
+    ts_period: row.ts_period,
+    symbols_ranked: safeJSON(snap.symbols_ranked, []),
+    selected_51_130: safeJSON(snap.selected_51_130, []),
+  };
 }
 
 export default db;

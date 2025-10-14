@@ -109,6 +109,19 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
     tags: ['ws', 'rule3'],
   });
 
+  // merge extra metrics if provided by strategies (e.g. market state)
+  try {
+    if (payload && payload.metrics && extras) {
+      if (typeof extras.total_score === 'number' && Number.isFinite(extras.total_score)) {
+        payload.metrics.total_score = extras.total_score;
+      }
+      payload.metrics.state = extras.state;
+      if (extras.state_text) {
+        payload.metrics.state_text = extras.state_text;
+      }
+    }
+  } catch {}
+
   await dispatchAlert({ config, text: msg, payload });
 }
 
@@ -150,6 +163,8 @@ class KlineAggregator {
     this.streams = []; // { ws, streamSymbols, backoffMs }
     // per-symbol rolling buckets: Map<symbol, Map<bucketStartMs, quoteVolUsd>>
     this.buckets = new Map();
+    // per-symbol minute candles: Map<symbol, Map<bucketStartMs, { openTime, low, close, volume }>>
+    this.candles = new Map();
     // 记录每个symbol上一次触发的分钟桶，避免同一分钟内重复告警
     this.lastBucketSent = new Map(); // symbol -> bucketStartMs
     // 记录最新价格（用于调试与价格变动）
@@ -219,7 +234,7 @@ class KlineAggregator {
             this.lastClosedPrice.set(symbol, closePrice);
           }
         }
-        this._updateBucket(symbol, openTime, quoteVol, isClosed);
+        this._updateBucket(symbol, openTime, quoteVol,k, isClosed);
         // compute rolling sum
         const nowMs = Date.now();
         const sum = this._sumLastMinutes(symbol, nowMs, this.windowMinutes);
@@ -262,10 +277,18 @@ class KlineAggregator {
     });
   }
 
-  _updateBucket(symbol, bucketStartMs, quoteVol, isClosed) {
+  _updateBucket(symbol, bucketStartMs, quoteVol, k, isClosed) {
     if (!this.buckets.has(symbol)) this.buckets.set(symbol, new Map());
     const map = this.buckets.get(symbol);
-    map.set(bucketStartMs, quoteVol);
+    const low = k && Number.isFinite(parseFloat(k.l)) ? parseFloat(k.l) : undefined;
+    const close = k && Number.isFinite(parseFloat(k.c)) ? parseFloat(k.c) : undefined;
+    const volume = Number(quoteVol) || 0;
+    map.set(bucketStartMs, {
+      openTime: bucketStartMs,
+      low,
+      close,
+      volume,
+    });
     // 清理过旧的桶
     const now = Date.now();
     const cutoff = now - this.windowMinutes * 60_000 - 60_000; // 额外留1分钟保证覆盖
@@ -279,10 +302,18 @@ class KlineAggregator {
     if (!map) return 0;
     const start = nowMs - windowMinutes * 60_000;
     let sum = 0;
-    for (const [bucketStart, q] of map.entries()) {
-      if (bucketStart >= start) sum += q || 0;
+    for (const [bucketStart, v] of map.entries()) {
+      if (bucketStart >= start) sum += (v && typeof v.volume === 'number') ? v.volume : 0;
     }
     return sum;
+  }
+
+  _getWindow(symbol) {
+    const map = this.buckets.get(symbol);
+    if (!map) return [];
+    return Array.from(map.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([, v]) => v);
   }
 
   _buildContextForStrategies({ symbol, openTime, sum, closePrice }) {
@@ -347,6 +378,7 @@ class KlineAggregator {
       markAlertSentLocal,
       markAlertSent,
       getSumLastMinutes: (symbol, minutes) => this._sumLastMinutes(symbol, Date.now(), minutes),
+      getWindow: (symbol) => this._getWindow(symbol),
       buildReasonLine: () => (this.marketCapMaxUsd > 0)
         ? `市值低于${formatCurrencyCompact(this.marketCapMaxUsd)}且${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`
         : `${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`,

@@ -1,6 +1,7 @@
 // 默认 Rule3 WS 策略（插件化）
 import fetch from "node-fetch";
 import logger from "../logger.js";
+import { getLatestUniverseSnapshotBefore, getAvgVolMapForLatestHourBefore } from "../db.js";
 // 行为与内置版本一致：当聚合器计算的滚动成交额 sum >= 阈值 thresholdUsd 时：
 // - 若启用市值过滤(marketCapMaxUsd > 0)，要求市值在 (0, marketCapMaxUsd)
 // - 同一分钟桶去重
@@ -40,6 +41,127 @@ function buildStrategyText(ctx, reasonLine, helpers) {
   }
   return lines.join('\n');
 }
+
+let cachedUniverse = { ts_period: null, symbols: null };
+let cachedAvg = { ts_hour: null, map: null };
+
+function floorToHourUTCms(d) {
+  const t = new Date(d);
+  t.setUTCMinutes(0, 0, 0);
+  return t.getTime();
+}
+
+function floorTo12hUTCms(d) {
+  const t = new Date(d);
+  t.setUTCMinutes(0, 0, 0);
+  const h = t.getUTCHours();
+  const h12 = Math.floor(h / 12) * 12;
+  t.setUTCHours(h12);
+  return t.getTime();
+}
+
+function sliceLastMinutes(arr, minutes) {
+  if (!Array.isArray(arr) || arr.length === 0) return [];
+  const needMs = minutes * 60000;
+  const endMs = arr[arr.length - 1].openTime;
+  const startMs = endMs - needMs + 60000;
+  let i = arr.length - 1;
+  while (i >= 0 && arr[i].openTime >= startMs) i--;
+  return arr.slice(i + 1);
+}
+
+function sumVolumes(arr) {
+  let s = 0;
+  for (const k of arr) s += Number(k.volume || 0);
+  return s;
+}
+
+function minLow(arr) {
+  let m = Infinity;
+  for (const k of arr) {
+    const v = Number(k.low || 0);
+    if (v < m) m = v;
+  }
+  return Number.isFinite(m) ? m : 0;
+}
+
+function scorePrice(latest, min5m) {
+  if (!(latest > 0) || !(min5m > 0)) return 0;
+  const ratio = latest / min5m;
+  if (ratio <= 1) return 0;
+  if (ratio >= 1.02) return 0.5;
+  return ((ratio - 1) / 0.02) * 0.5;
+}
+
+function scoreVolume(vol5m, avg5m) {
+  if (!(avg5m > 0) || !(vol5m >= 0)) return 0;
+  const ratio = vol5m / avg5m;
+  if (ratio >= 2) return 0.5;
+  const r = ratio / 2;
+  const clamped = Math.max(0, Math.min(1, r));
+  return clamped * 0.5;
+}
+
+function weightOf(sym) {
+  if (sym === 'ETHUSDT') return 0.15;
+  if (sym === 'SOLUSDT') return 0.05;
+  return 0.01;
+}
+
+export async function computeMarketStateRealtime(tsMs, readers, options = {}) {
+  const hourKey = floorToHourUTCms(new Date(tsMs));
+  const periodKey = floorTo12hUTCms(new Date(tsMs));
+
+  if (!cachedUniverse.symbols || cachedUniverse.ts_period !== periodKey) {
+    const snap = getLatestUniverseSnapshotBefore(tsMs);
+    const list = (snap && Array.isArray(snap.selected_51_130)) ? snap.selected_51_130 : [];
+    cachedUniverse = { ts_period: periodKey, symbols: ['ETHUSDT', 'SOLUSDT', ...list] };
+  }
+
+  if (!cachedAvg.map || cachedAvg.ts_hour !== hourKey) {
+    const { ts_hour, map } = getAvgVolMapForLatestHourBefore(tsMs);
+    cachedAvg = { ts_hour: ts_hour || hourKey, map: map || {} };
+  }
+
+  const symbols = cachedUniverse.symbols || [];
+  const avgMap = cachedAvg.map || {};
+  const rows = [];
+  for (const sym of symbols) {
+    const win = readers && typeof readers.getWindow === 'function' ? readers.getWindow(sym) : null;
+    if (!Array.isArray(win) || win.length === 0) continue;
+    const last5 = sliceLastMinutes(win, 5);
+    if (last5.length === 0) continue;
+    const min5 = minLow(last5);
+    const vol5 = sumVolumes(last5);
+    const latest = Number(win[win.length - 1].close || 0);
+    const preAvg = Number(avgMap[sym] || 0);
+    const avg5m = preAvg > 0 ? preAvg : 0;
+    const price_score = scorePrice(latest, min5);
+    const vol_score = scoreVolume(vol5, avg5m);
+    const symbol_score = price_score + vol_score;
+    const weight = weightOf(sym);
+    rows.push({
+      symbol: sym,
+      price_score,
+      vol_score,
+      symbol_score,
+      weight,
+      latest_price: latest,
+      min_price_5m: min5,
+      vol_5m: vol5,
+      avg_vol_5m_5h: avg5m,
+    });
+  }
+
+  let total = 0;
+  for (const r of rows) total += r.symbol_score * r.weight;
+  const total_score = total * 100;
+  const threshold = (typeof options.aggressiveThreshold === 'number' && Number.isFinite(options.aggressiveThreshold)) ? options.aggressiveThreshold : 60;
+  const state_text = total_score > threshold ? 'aggressive' : 'conservative';
+  const state = total_score > threshold ? 1 : 0;
+  return { ts: tsMs, total_score, state, state_text, rows };
+}
+
 
 export default async function rule3Default(ctx, config, helpers) {
   const { symbol, openTime, sumTurnover, marketCap, prevForDisplay, closeForDisplay, deltaPct, trendEmoji, closePrice } = ctx;
@@ -131,6 +253,17 @@ export default async function rule3Default(ctx, config, helpers) {
     : `${helpers.windowMinutes}m成交额超过$${(helpers.thresholdUsd/1_000_000).toFixed(2)}M`;
   const ratio = (typeof marketCap === 'number' && marketCap > 0) ? (sumTurnover / marketCap) : undefined;
 
+  let marketStateRes = null;
+  try {
+    const readers = (helpers && typeof helpers.getWindow === 'function') ? { getWindow: helpers.getWindow } : null;
+    if (readers) {
+      const aggressiveThreshold = (config && config.marketState && typeof config.marketState.aggressiveThreshold === 'number') ? config.marketState.aggressiveThreshold : 60;
+      marketStateRes = await computeMarketStateRealtime(Date.now(), readers, { aggressiveThreshold });
+    }
+  } catch (e) {
+    logger.warn({ err: String(e) }, '实时计算市场状态失败，忽略');
+  }
+
   const text = buildStrategyText(ctx, reasonLine, helpers);
   await helpers.notify(symbol, reasonLine, sumTurnover, { alerts: config.alerts }, {
     trendEmoji,
@@ -138,6 +271,9 @@ export default async function rule3Default(ctx, config, helpers) {
     ratio,
     prevClose: Number.isFinite(prevForDisplay) ? prevForDisplay : undefined,
     closePrice: Number.isFinite(closeForDisplay) ? closeForDisplay : (Number.isFinite(closePrice) ? closePrice : undefined),
-    deltaPct
+    deltaPct,
+    total_score: marketStateRes ? marketStateRes.total_score : undefined,
+    state_text: marketStateRes ? marketStateRes.state_text : undefined,
+    state: marketStateRes ? marketStateRes.state : undefined
   }, { strategy: `${helpers.windowMinutes}m_turnover`, text });
 }
