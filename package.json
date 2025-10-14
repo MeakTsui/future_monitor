@@ -9,7 +9,11 @@
     "monitor": "node monitor.js",
     "sync": "node supply_sync.js",
     "sync:binance": "node supply_sync_binance.js",
-    "migrate:supply": "node migrate_supply_json_to_db.js"
+    "migrate:supply": "node migrate_supply_json_to_db.js",
+    "market:state": "node market_state_minutely.js",
+    "server": "node server.js",
+    "symbols:update": "node symbols_update.js",
+    "avgvol:hourly": "node avg_vol_hourly.js"
   },
   "private": true,
   "dependencies": {

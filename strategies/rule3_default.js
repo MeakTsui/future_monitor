@@ -2,6 +2,7 @@
 import fetch from "node-fetch";
 import logger from "../logger.js";
 import { getLatestUniverseSnapshotBefore, getAvgVolMapForLatestHourBefore } from "../db.js";
+import * as helpers from "../alerting/index.js";
 // 行为与内置版本一致：当聚合器计算的滚动成交额 sum >= 阈值 thresholdUsd 时：
 // - 若启用市值过滤(marketCapMaxUsd > 0)，要求市值在 (0, marketCapMaxUsd)
 // - 同一分钟桶去重
@@ -264,7 +265,45 @@ export default async function rule3Default(ctx, config, helpers) {
     logger.warn({ err: String(e) }, '实时计算市场状态失败，忽略');
   }
 
-  const text = buildStrategyText(ctx, reasonLine, helpers);
+  let halfBars = undefined;
+  let halfMs = undefined;
+  let priceChangePct = undefined;
+  try {
+    if (helpers && typeof helpers.getWindow === 'function') {
+      const win = helpers.getWindow(symbol) || [];
+      if (Array.isArray(win) && win.length > 0) {
+        const half = Number(helpers.thresholdUsd) / 2;
+        let acc = 0;
+        let count = 0;
+        for (let i = win.length - 1; i >= 0; i--) {
+          const v = Number(win[i] && win[i].volume || 0);
+          acc += v;
+          count++;
+          if (acc >= half) {
+            halfBars = count;
+            halfMs = count * 60000;
+            const earliest = win[i];
+            const latest = win[win.length - 1];
+            const o = Number(earliest && earliest.open);
+            const c = Number(latest && latest.close);
+            if (Number.isFinite(o) && o > 0 && Number.isFinite(c)) {
+              priceChangePct = (c - o) / o;
+            }
+            break;
+          }
+        }
+      }
+    }
+  } catch {}
+
+  let text = buildStrategyText(ctx, reasonLine, helpers);
+  try {
+    const extra = [];
+    if (typeof halfBars === 'number') extra.push(`速度: 最近${halfBars}根1m达到阈值一半`);
+    if (typeof priceChangePct === 'number') extra.push(`价格变动: ${helpers.formatNumber(priceChangePct, 3)}`);
+    if (extra.length) text = `${text}\n${extra.join('\n')}`;
+  } catch {}
+
   await helpers.notify(symbol, reasonLine, sumTurnover, { alerts: config.alerts }, {
     trendEmoji,
     marketCap,
@@ -272,8 +311,10 @@ export default async function rule3Default(ctx, config, helpers) {
     prevClose: Number.isFinite(prevForDisplay) ? prevForDisplay : undefined,
     closePrice: Number.isFinite(closeForDisplay) ? closeForDisplay : (Number.isFinite(closePrice) ? closePrice : undefined),
     deltaPct,
-    total_score: marketStateRes ? marketStateRes.total_score : undefined,
+    total_score: (marketStateRes && typeof marketStateRes.total_score === 'number') ? Number(marketStateRes.total_score.toFixed(3)) : undefined,
     state_text: marketStateRes ? marketStateRes.state_text : undefined,
-    state: marketStateRes ? marketStateRes.state : undefined
+    state: marketStateRes ? marketStateRes.state : undefined,
+    half_bars_to_half_threshold: typeof halfBars === 'number' ? halfBars : undefined,
+    price_change_pct_from_earliest_open: (typeof priceChangePct === 'number') ? Number(priceChangePct.toFixed(3)) : undefined
   }, { strategy: `${helpers.windowMinutes}m_turnover`, text });
 }

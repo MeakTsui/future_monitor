@@ -2,6 +2,7 @@ import logger from "../logger.js";
 import consoleProvider from "./providers/console.js";
 import telegramProvider from "./providers/telegram.js";
 import webhookProvider from "./providers/webhook.js";
+import csvMarketStateProvider from "./providers/csv_market_state.js";
 export { buildAlertPayload, buildDefaultText, formatNumber, formatCurrency, formatCurrencyCompact, buildBinanceFuturesUrl } from "./format.js";
 
 // Provider registry
@@ -9,6 +10,7 @@ const registry = new Map([
   ["console", consoleProvider],
   ["telegram", telegramProvider],
   ["webhook", webhookProvider],
+  ["csv_market_state", csvMarketStateProvider],
 ]);
 
 export function registerProvider(name, fn) {

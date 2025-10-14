@@ -78,6 +78,8 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
     prevClose,  // number | undefined
     closePrice, // number | undefined
     deltaPct,   // number | undefined (0.0158 表示 +1.58%)
+    half_bars_to_half_threshold,
+    price_change_pct_from_earliest_open //(0.0158 表示 +1.58%)
   } = extras;
 
   const msg = (options && typeof options.text === 'string' && options.text.trim().length > 0)
@@ -104,6 +106,8 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
       prevClose,
       closePrice,
       deltaPct,
+      half_bars_to_half_threshold,
+      price_change_pct_from_earliest_open,
     },
     links: { binanceFutures: buildBinanceFuturesUrl(symbol) },
     tags: ['ws', 'rule3'],
@@ -280,11 +284,13 @@ class KlineAggregator {
   _updateBucket(symbol, bucketStartMs, quoteVol, k, isClosed) {
     if (!this.buckets.has(symbol)) this.buckets.set(symbol, new Map());
     const map = this.buckets.get(symbol);
+    const open = k && Number.isFinite(parseFloat(k.o)) ? parseFloat(k.o) : undefined;
     const low = k && Number.isFinite(parseFloat(k.l)) ? parseFloat(k.l) : undefined;
     const close = k && Number.isFinite(parseFloat(k.c)) ? parseFloat(k.c) : undefined;
     const volume = Number(quoteVol) || 0;
     map.set(bucketStartMs, {
       openTime: bucketStartMs,
+      open,
       low,
       close,
       volume,
