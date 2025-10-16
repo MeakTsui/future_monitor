@@ -140,6 +140,7 @@ async function main() {
   }
 }
 
-if (process.argv[1] && process.argv[1].endsWith('supply_sync_binance.js')) {
-  main();
-}
+main().catch(e => {
+  logger.error({ err: String(e) }, 'supply_sync_binance 失败');
+  process.exit(1);
+});
