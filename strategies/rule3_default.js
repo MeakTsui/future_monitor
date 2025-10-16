@@ -363,6 +363,7 @@ export default async function rule3Default(ctx, config, helpers) {
     trendEmoji,
     marketCap,
     ratio,
+    type: "1",
     prevClose: Number.isFinite(prevForDisplay) ? prevForDisplay : undefined,
     closePrice: Number.isFinite(closeForDisplay) ? closeForDisplay : (Number.isFinite(closePrice) ? closePrice : undefined),
     deltaPct,

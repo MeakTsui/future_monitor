@@ -73,6 +73,7 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
   const {
     reasonLine, // 例如: 市值低于$500.00M且15m成交额超过$5.00M
     trendEmoji, // 📈/📉/➖
+    type,
     marketCap,  // number | undefined
     ratio,      // number | undefined (成交额/市值)
     prevClose,  // number | undefined
@@ -95,6 +96,7 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
   const payload = buildAlertPayload({
     strategy: strategyId,
     symbol,
+    type,
     reason: reasonLine,
     windowMinutes,
     severity: 'warning',

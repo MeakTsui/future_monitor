@@ -50,6 +50,7 @@ export function buildAlertPayload({
   strategy = "",
   symbol = "",
   reason = "",
+  type="1",
   windowMinutes,
   severity = "info",
   metrics = {},
@@ -61,6 +62,7 @@ export function buildAlertPayload({
   return {
     version: 1,
     source: "future_monitor",
+    type,
     strategy,
     symbol,
     reason,

@@ -40,6 +40,7 @@
           "vol5mGteUsd": 400000
         }
       ],
+      "symbolBlacklist": ["BTCUSDT", "ETHUSDT"],
       "enableMarketState": true,
       "volumeThresholdRatio": 0.7,
       "defaultMarketCapUsd": 30000000
@@ -72,6 +73,19 @@
 ### `tierBypassStrategy.volumeThresholdRatio` (可选，默认 0.7)
 
 用于计算"速度"指标的阈值比例：从最新K线往回累计，达到 `ratio * vol5m` 所需的K线数量。
+
+### `tierBypassStrategy.symbolBlacklist` (可选)
+
+币对黑名单数组。黑名单中的币对将不会触发告警，即使命中档位。
+
+- 数组格式，每个元素为完整的币对名称（如 `"BTCUSDT"`）
+- 黑名单检查在档位匹配之前执行，避免不必要的计算
+- 黑名单币对会输出 debug 级别日志
+
+**使用场景**: 
+- 过滤掉不关注的主流币（如 BTC、ETH）
+- 临时屏蔽某些异常波动的币对
+- 避免对特定币对产生告警噪音
 
 ### `tierBypassStrategy.defaultMarketCapUsd` (可选)
 
@@ -170,6 +184,10 @@
   ```
   logger.debug({ symbol }, 'tier_bypass策略：缺少可用市值/窗口读取器，跳过')
   ```
+- **币对在黑名单中**:
+  ```
+  logger.debug({ symbol }, 'tier_bypass策略：币对在黑名单中，跳过')
+  ```
 
 **优化说明**: 命中档位但在冷却期的日志已降级为 `debug`，避免在正常运行时产生大量重复日志。只有真正发送告警时才输出 `info` 级别日志。
 
@@ -188,6 +206,11 @@
 ### 场景3：大市值稳定监控
 
 - 市值 ≥ 50M，5分钟量 > 500K → 档位命中。
+
+### 场景4：过滤主流币
+
+- 配置黑名单 `["BTCUSDT", "ETHUSDT"]`，即使这些币对命中档位也不发送告警。
+- 适用于只关注小市值山寨币的监控场景。
 
 ---
 

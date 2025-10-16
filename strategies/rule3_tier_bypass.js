@@ -169,6 +169,14 @@ export default async function rule3TierBypass(ctx, config, helpers) {
 
   // 读取策略配置
   const stratCfg = (config && config.rule3ws && config.rule3ws.tierBypassStrategy) || {};
+  
+  // 检查黑名单
+  const blacklist = Array.isArray(stratCfg.symbolBlacklist) ? stratCfg.symbolBlacklist : [];
+  if (blacklist.length > 0 && blacklist.includes(symbol)) {
+    logger.debug({ symbol }, 'tier_bypass策略：币对在黑名单中，跳过');
+    return;
+  }
+  
   const tiers = Array.isArray(stratCfg.tiers) ? stratCfg.tiers : [];
   if (tiers.length === 0) {
     logger.debug({ symbol }, 'tier_bypass策略：未配置档位，跳过');
@@ -316,6 +324,7 @@ export default async function rule3TierBypass(ctx, config, helpers) {
     trendEmoji,
     marketCap: effectiveMarketCap,
     ratio,
+    type: "2",
     prevClose: Number.isFinite(prevForDisplay) ? prevForDisplay : undefined,
     closePrice: Number.isFinite(closeForDisplay) ? closeForDisplay : (Number.isFinite(closePrice) ? closePrice : undefined),
     deltaPct,
