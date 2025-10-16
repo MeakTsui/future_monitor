@@ -189,49 +189,52 @@ export default async function rule3Default(ctx, config, helpers) {
   helpers.markAlertSent(symbol, reason);
   lastBucketSent.set(symbol, openTime);
 
-  // 按档位配置，基于市值与5m成交额，决定是否绕过均量检查
-  let bypassAvg = false;
-  try {
-    const ruleCfg = (config && config.rule3ws) || {};
-    const tiers = Array.isArray(ruleCfg.bypassAvgVolumeTiers) ? ruleCfg.bypassAvgVolumeTiers : [];
-    if (tiers.length > 0) {
-      if (!(Number.isFinite(marketCap) && marketCap > 0)) {
-        logger.debug({ symbol }, '均量绕过检查：缺少可用市值，跳过档位匹配');
-      } else if (!(helpers && typeof helpers.getWindow === 'function')) {
-        logger.debug({ symbol }, '均量绕过检查：缺少窗口读取器，跳过档位匹配');
-      } else {
-        const win = helpers.getWindow(symbol) || [];
-        const last5 = sliceLastMinutes(win, 5);
-        const vol5m = sumVolumes(last5);
-        for (let i = 0; i < tiers.length; i++) {
-          const t = tiers[i] || {};
-          const vCond = (typeof t.vol5mGteUsd === 'number' && t.vol5mGteUsd >= 0) ? (vol5m >= t.vol5mGteUsd) : false;
-          let mcCond = false;
-          const hasLt = (typeof t.marketCapLtUsd === 'number');
-          const hasGte = (typeof t.marketCapGteUsd === 'number');
-          if (hasLt && hasGte) {
-            mcCond = (marketCap >= t.marketCapGteUsd && marketCap < t.marketCapLtUsd);
-          } else if (hasLt) {
-            mcCond = (marketCap < t.marketCapLtUsd);
-          } else if (hasGte) {
-            mcCond = (marketCap >= t.marketCapGteUsd);
-          } else {
-            mcCond = false; // no bounds specified => do not match by market cap
-          }
-          if (vCond && mcCond) {
-            bypassAvg = true;
-            logger.info({ symbol, marketCap, vol5m, tierIndex: i, tier: t }, '均量检查：满足档位，绕过均量检查');
-            break;
-          }
-        }
-        if (!bypassAvg) {
-          logger.debug({ symbol, marketCap, vol5m, tiers: tiers.length }, '均量检查：未匹配任何档位，不绕过');
-        }
-      }
-    }
-  } catch (e) {
-    logger.warn({ symbol, err: e.message }, '均量绕过检查：异常，按未绕过处理');
-  }
+  // 注释：档位匹配逻辑已独立到 rule3_tier_bypass.js 策略
+  // 如需使用档位绕过均量检查，请配置 wsStrategies: ["./strategies/rule3_tier_bypass.js"]
+  // 
+  // // 按档位配置，基于市值与5m成交额，决定是否绕过均量检查
+  // let bypassAvg = false;
+  // try {
+  //   const ruleCfg = (config && config.rule3ws) || {};
+  //   const tiers = Array.isArray(ruleCfg.bypassAvgVolumeTiers) ? ruleCfg.bypassAvgVolumeTiers : [];
+  //   if (tiers.length > 0) {
+  //     if (!(Number.isFinite(marketCap) && marketCap > 0)) {
+  //       logger.debug({ symbol }, '均量绕过检查：缺少可用市值，跳过档位匹配');
+  //     } else if (!(helpers && typeof helpers.getWindow === 'function')) {
+  //       logger.debug({ symbol }, '均量绕过检查：缺少窗口读取器，跳过档位匹配');
+  //     } else {
+  //       const win = helpers.getWindow(symbol) || [];
+  //       const last5 = sliceLastMinutes(win, 5);
+  //       const vol5m = sumVolumes(last5);
+  //       for (let i = 0; i < tiers.length; i++) {
+  //         const t = tiers[i] || {};
+  //         const vCond = (typeof t.vol5mGteUsd === 'number' && t.vol5mGteUsd >= 0) ? (vol5m >= t.vol5mGteUsd) : false;
+  //         let mcCond = false;
+  //         const hasLt = (typeof t.marketCapLtUsd === 'number');
+  //         const hasGte = (typeof t.marketCapGteUsd === 'number');
+  //         if (hasLt && hasGte) {
+  //           mcCond = (marketCap >= t.marketCapGteUsd && marketCap < t.marketCapLtUsd);
+  //         } else if (hasLt) {
+  //           mcCond = (marketCap < t.marketCapLtUsd);
+  //         } else if (hasGte) {
+  //           mcCond = (marketCap >= t.marketCapGteUsd);
+  //         } else {
+  //           mcCond = false; // no bounds specified => do not match by market cap
+  //         }
+  //         if (vCond && mcCond) {
+  //           bypassAvg = true;
+  //           logger.info({ symbol, marketCap, vol5m, tierIndex: i, tier: t }, '均量检查：满足档位，绕过均量检查');
+  //           break;
+  //         }
+  //       }
+  //       if (!bypassAvg) {
+  //         logger.debug({ symbol, marketCap, vol5m, tiers: tiers.length }, '均量检查：未匹配任何档位，不绕过');
+  //       }
+  //     }
+  //   }
+  // } catch (e) {
+  //   logger.warn({ symbol, err: e.message }, '均量绕过检查：异常，按未绕过处理');
+  // }
 
   // 均量检查（可选）：
   // 拉取最近 limit 根 1m K 线；使用前 (limit - windowMinutes) 根，按 windowMinutes 为一组不重叠分组，
@@ -239,7 +242,7 @@ export default async function rule3Default(ctx, config, helpers) {
   // 示例：limit=100, windowMinutes=5，则均量 = sum(vol(100-5)) / ((100-5)/5)。
   try {
     const ruleCfg = (config && config.rule3ws) || {};
-    const enabled = !!ruleCfg.enableAvgVolumeCheck && !bypassAvg;
+    const enabled = !!ruleCfg.enableAvgVolumeCheck;
     const multiplier = (typeof ruleCfg.avgVolumeMultiplier === 'number' && ruleCfg.avgVolumeMultiplier > 0) ? ruleCfg.avgVolumeMultiplier : 2;
     const W = Math.max(1, Math.floor(helpers.windowMinutes));
     const limit = (typeof ruleCfg.avgVolumeKlinesLimit === 'number' && ruleCfg.avgVolumeKlinesLimit > W)
@@ -287,10 +290,11 @@ export default async function rule3Default(ctx, config, helpers) {
         return
       }
     }
-    if (!enabled && !bypassAvg && !!ruleCfg.enableAvgVolumeCheck) {
-      // enable=true 但被其他原因短路（理论上不会到这里）；保底日志
-      logger.debug({ symbol }, '均量检查：被禁用或未启用');
-    }
+    // 注释：bypassAvg 逻辑已移除，此处保底日志已无意义
+    // if (!enabled && !bypassAvg && !!ruleCfg.enableAvgVolumeCheck) {
+    //   // enable=true 但被其他原因短路（理论上不会到这里）；保底日志
+    //   logger.debug({ symbol }, '均量检查：被禁用或未启用');
+    // }
   } catch (e) {
     logger.error({ err: e.message }, '均量检查：发生异常，不发送');
     return
