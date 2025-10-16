@@ -44,6 +44,18 @@ module.exports = {
       env: {
         LOG_LEVEL: process.env.LOG_LEVEL || 'info'
       }
-    }
+    },
+    {
+      name: 'supply-sync-binance',
+      script: 'supply_sync_binance.js',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: false,
+      watch: false,
+      cron_restart: '0 0,3 * * *',
+      env: {
+        LOG_LEVEL: process.env.LOG_LEVEL || 'info'
+      }
+    },
   ]
 };
