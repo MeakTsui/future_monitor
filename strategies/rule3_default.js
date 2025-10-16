@@ -316,18 +316,21 @@ export default async function rule3Default(ctx, config, helpers) {
   let halfBars = undefined;
   let halfMs = undefined;
   let priceChangePct = undefined;
+  let volume_threshold_ratio = 0.7;
   try {
     if (helpers && typeof helpers.getWindow === 'function') {
       const win = helpers.getWindow(symbol) || [];
       if (Array.isArray(win) && win.length > 0) {
-        const half = Number(helpers.thresholdUsd) / 2;
+        const last5 = sliceLastMinutes(win, 5);
+        const vol5m = sumVolumes(last5);
+        const volume_threshold = volume_threshold_ratio * vol5m;
         let acc = 0;
         let count = 0;
         for (let i = win.length - 1; i >= 0; i--) {
           const v = Number(win[i] && win[i].volume || 0);
           acc += v;
           count++;
-          if (acc >= half) {
+          if (acc >= volume_threshold) {
             halfBars = count;
             halfMs = count * 60000;
             const earliest = win[i];
@@ -347,7 +350,7 @@ export default async function rule3Default(ctx, config, helpers) {
   let text = buildStrategyText(ctx, reasonLine, helpers);
   try {
     const extra = [];
-    if (typeof halfBars === 'number') extra.push(`速度: 最近${halfBars}根1m达到阈值一半`);
+    if (typeof halfBars === 'number') extra.push(`速度: 最近${halfBars}根1m达到阈值${volume_threshold_ratio}`);
     if (typeof priceChangePct === 'number') extra.push(`价格变动: ${helpers.formatNumber(priceChangePct, 3)}`);
     if (extra.length) text = `${text}\n${extra.join('\n')}`;
   } catch {}
