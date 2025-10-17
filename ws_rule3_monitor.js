@@ -118,12 +118,29 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
   // merge extra metrics if provided by strategies (e.g. market state)
   try {
     if (payload && payload.metrics && extras) {
+      // 新版字段：market_price_score, market_volume_score
+      if (typeof extras.market_price_score === 'number' && Number.isFinite(extras.market_price_score)) {
+        payload.metrics.market_price_score = extras.market_price_score;
+      }
+      if (typeof extras.market_volume_score === 'number' && Number.isFinite(extras.market_volume_score)) {
+        payload.metrics.market_volume_score = extras.market_volume_score;
+      }
+      if (extras.market_state_text) {
+        payload.metrics.market_state_text = extras.market_state_text;
+      }
+      if (typeof extras.market_state !== 'undefined') {
+        payload.metrics.market_state = extras.market_state;
+      }
+      
+      // 兼容旧版字段（如果存在）
       if (typeof extras.total_score === 'number' && Number.isFinite(extras.total_score)) {
         payload.metrics.total_score = extras.total_score;
       }
-      payload.metrics.state = extras.state;
       if (extras.state_text) {
         payload.metrics.state_text = extras.state_text;
+      }
+      if (typeof extras.state !== 'undefined') {
+        payload.metrics.state = extras.state;
       }
     }
   } catch {}

@@ -1,11 +1,14 @@
 // Rule3 策略：基于市值区间与5分钟成交额的档位匹配，绕过均量检查
 // 配置示例：config.rule3ws.tierBypassStrategy = { tiers: [...], enableMarketState: true }
 import logger from "../logger.js";
-import { getLatestUniverseSnapshotBefore, getAvgVolMapForLatestHourBefore } from "../db.js";
+import { getMarketStateMinuteLast5Min } from "../db.js";
 
 const lastBucketSent = new Map(); // symbol -> last openTime
 
 // 复用工具函数
+// 计算逻辑已移至 market_state_calculator.js
+// 此处保留辅助函数供其他逻辑使用
+
 function sliceLastMinutes(arr, minutes) {
   if (!Array.isArray(arr) || arr.length === 0) return [];
   const needMs = minutes * 60000;
@@ -20,110 +23,6 @@ function sumVolumes(arr) {
   let s = 0;
   for (const k of arr) s += Number(k.volume || 0);
   return s;
-}
-
-function minLow(arr) {
-  let m = Infinity;
-  for (const k of arr) {
-    const v = Number(k.low || 0);
-    if (v < m) m = v;
-  }
-  return Number.isFinite(m) ? m : 0;
-}
-
-function scorePrice(latest, min5m) {
-  if (!(latest > 0) || !(min5m > 0)) return 0;
-  const ratio = latest / min5m;
-  if (ratio <= 1) return 0;
-  if (ratio >= 1.02) return 0.5;
-  return ((ratio - 1) / 0.02) * 0.5;
-}
-
-function scoreVolume(vol5m, avg5m) {
-  if (!(avg5m > 0) || !(vol5m >= 0)) return 0;
-  const ratio = vol5m / avg5m;
-  if (ratio >= 2) return 0.5;
-  const r = ratio / 2;
-  const clamped = Math.max(0, Math.min(1, r));
-  return clamped * 0.5;
-}
-
-function weightOf(sym) {
-  if (sym === 'ETHUSDT') return 0.15;
-  if (sym === 'SOLUSDT') return 0.05;
-  return 0.01;
-}
-
-function floorToHourUTCms(d) {
-  const t = new Date(d);
-  t.setUTCMinutes(0, 0, 0);
-  return t.getTime();
-}
-
-function floorTo12hUTCms(d) {
-  const t = new Date(d);
-  t.setUTCMinutes(0, 0, 0);
-  const h = t.getUTCHours();
-  const h12 = Math.floor(h / 12) * 12;
-  t.setUTCHours(h12);
-  return t.getTime();
-}
-
-let cachedUniverse = { ts_period: null, symbols: null };
-let cachedAvg = { ts_hour: null, map: null };
-
-async function computeMarketStateRealtime(tsMs, readers, options = {}) {
-  const hourKey = floorToHourUTCms(new Date(tsMs));
-  const periodKey = floorTo12hUTCms(new Date(tsMs));
-
-  if (!cachedUniverse.symbols || cachedUniverse.ts_period !== periodKey) {
-    const snap = getLatestUniverseSnapshotBefore(tsMs);
-    const list = (snap && Array.isArray(snap.selected_51_130)) ? snap.selected_51_130 : [];
-    cachedUniverse = { ts_period: periodKey, symbols: ['ETHUSDT', 'SOLUSDT', ...list] };
-  }
-
-  if (!cachedAvg.map || cachedAvg.ts_hour !== hourKey) {
-    const { ts_hour, map } = getAvgVolMapForLatestHourBefore(tsMs);
-    cachedAvg = { ts_hour: ts_hour || hourKey, map: map || {} };
-  }
-
-  const symbols = cachedUniverse.symbols || [];
-  const avgMap = cachedAvg.map || {};
-  const rows = [];
-  for (const sym of symbols) {
-    const win = readers && typeof readers.getWindow === 'function' ? readers.getWindow(sym) : null;
-    if (!Array.isArray(win) || win.length === 0) continue;
-    const last5 = sliceLastMinutes(win, 5);
-    if (last5.length === 0) continue;
-    const min5 = minLow(last5);
-    const vol5 = sumVolumes(last5);
-    const latest = Number(win[win.length - 1].close || 0);
-    const preAvg = Number(avgMap[sym] || 0);
-    const avg5m = preAvg > 0 ? preAvg : 0;
-    const price_score = scorePrice(latest, min5);
-    const vol_score = scoreVolume(vol5, avg5m);
-    const symbol_score = price_score + vol_score;
-    const weight = weightOf(sym);
-    rows.push({
-      symbol: sym,
-      price_score,
-      vol_score,
-      symbol_score,
-      weight,
-      latest_price: latest,
-      min_price_5m: min5,
-      vol_5m: vol5,
-      avg_vol_5m_5h: avg5m,
-    });
-  }
-
-  let total = 0;
-  for (const r of rows) total += r.symbol_score * r.weight;
-  const total_score = total * 100;
-  const threshold = (typeof options.aggressiveThreshold === 'number' && Number.isFinite(options.aggressiveThreshold)) ? options.aggressiveThreshold : 60;
-  const state_text = total_score > threshold ? 'aggressive' : 'conservative';
-  const state = total_score > threshold ? 1 : 0;
-  return { ts: tsMs, total_score, state, state_text, rows };
 }
 
 function buildStrategyText(ctx, reasonLine, helpers, tierInfo) {
@@ -268,15 +167,28 @@ export default async function rule3TierBypass(ctx, config, helpers) {
   const reasonLine = `${mcLabel}且5m成交额${helpers.formatCurrencyCompact(vol5m)}，命中第${matchedTierIndex + 1}档`;
   const ratio = (typeof effectiveMarketCap === 'number' && effectiveMarketCap > 0) ? (sumTurnover / effectiveMarketCap) : undefined;
 
-  // 可选：计算市场状态
+  // 从数据库查询最近5分钟的市场状态均值（由 market_state_cron.js 定时计算）
   let marketStateRes = null;
   if (stratCfg.enableMarketState !== false) {
     try {
-      const readers = { getWindow: helpers.getWindow };
-      const aggressiveThreshold = (config && config.marketState && typeof config.marketState.aggressiveThreshold === 'number') ? config.marketState.aggressiveThreshold : 60;
-      marketStateRes = await computeMarketStateRealtime(Date.now(), readers, { aggressiveThreshold });
+      const avgState = getMarketStateMinuteLast5Min();
+      if (avgState) {
+        marketStateRes = {
+          price_score: avgState.price_score,
+          volume_score: avgState.volume_score,
+          state: avgState.state,
+          state_text: avgState.state,
+          sample_count: avgState.count,
+        };
+        logger.debug({ 
+          symbol, 
+          price_score: avgState.price_score.toFixed(2), 
+          volume_score: avgState.volume_score.toFixed(2),
+          sample_count: avgState.count 
+        }, 'tier_bypass策略：查询到5分钟市场状态均值');
+      }
     } catch (e) {
-      logger.warn({ err: String(e) }, 'tier_bypass策略：实时计算市场状态失败，忽略');
+      logger.warn({ err: String(e) }, 'tier_bypass策略：查询市场状态失败，忽略');
     }
   }
 
@@ -328,9 +240,10 @@ export default async function rule3TierBypass(ctx, config, helpers) {
     prevClose: Number.isFinite(prevForDisplay) ? prevForDisplay : undefined,
     closePrice: Number.isFinite(closeForDisplay) ? closeForDisplay : (Number.isFinite(closePrice) ? closePrice : undefined),
     deltaPct,
-    total_score: (marketStateRes && typeof marketStateRes.total_score === 'number') ? Number(marketStateRes.total_score.toFixed(3)) : undefined,
-    state_text: marketStateRes ? marketStateRes.state_text : undefined,
-    state: marketStateRes ? marketStateRes.state : undefined,
+    market_price_score: (marketStateRes && typeof marketStateRes.price_score === 'number') ? Number(marketStateRes.price_score.toFixed(2)) : undefined,
+    market_volume_score: (marketStateRes && typeof marketStateRes.volume_score === 'number') ? Number(marketStateRes.volume_score.toFixed(2)) : undefined,
+    market_state_text: marketStateRes ? marketStateRes.state_text : undefined,
+    market_state: marketStateRes ? marketStateRes.state : undefined,
     half_bars_to_half_threshold: typeof halfBars === 'number' ? halfBars : undefined,
     price_change_pct_from_earliest_open: (typeof priceChangePct === 'number') ? Number(priceChangePct.toFixed(3)) : undefined,
     tier_index: matchedTierIndex,

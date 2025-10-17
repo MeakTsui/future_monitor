@@ -1,7 +1,7 @@
 // 默认 Rule3 WS 策略（插件化）
 import fetch from "node-fetch";
 import logger from "../logger.js";
-import { getLatestUniverseSnapshotBefore, getAvgVolMapForLatestHourBefore } from "../db.js";
+import { getMarketStateMinuteLast5Min } from "../db.js";
 import * as helpers from "../alerting/index.js";
 // 行为与内置版本一致：当聚合器计算的滚动成交额 sum >= 阈值 thresholdUsd 时：
 // - 若启用市值过滤(marketCapMaxUsd > 0)，要求市值在 (0, marketCapMaxUsd)
@@ -43,23 +43,8 @@ function buildStrategyText(ctx, reasonLine, helpers) {
   return lines.join('\n');
 }
 
-let cachedUniverse = { ts_period: null, symbols: null };
-let cachedAvg = { ts_hour: null, map: null };
-
-function floorToHourUTCms(d) {
-  const t = new Date(d);
-  t.setUTCMinutes(0, 0, 0);
-  return t.getTime();
-}
-
-function floorTo12hUTCms(d) {
-  const t = new Date(d);
-  t.setUTCMinutes(0, 0, 0);
-  const h = t.getUTCHours();
-  const h12 = Math.floor(h / 12) * 12;
-  t.setUTCHours(h12);
-  return t.getTime();
-}
+// 计算逻辑已移至 market_state_calculator.js
+// 此处保留辅助函数供其他逻辑使用
 
 function sliceLastMinutes(arr, minutes) {
   if (!Array.isArray(arr) || arr.length === 0) return [];
@@ -306,15 +291,27 @@ export default async function rule3Default(ctx, config, helpers) {
     : `${helpers.windowMinutes}m成交额超过$${(helpers.thresholdUsd/1_000_000).toFixed(2)}M`;
   const ratio = (typeof marketCap === 'number' && marketCap > 0) ? (sumTurnover / marketCap) : undefined;
 
+  // 从数据库查询最近5分钟的市场状态均值（由 market_state_cron.js 定时计算）
   let marketStateRes = null;
   try {
-    const readers = (helpers && typeof helpers.getWindow === 'function') ? { getWindow: helpers.getWindow } : null;
-    if (readers) {
-      const aggressiveThreshold = (config && config.marketState && typeof config.marketState.aggressiveThreshold === 'number') ? config.marketState.aggressiveThreshold : 60;
-      marketStateRes = await computeMarketStateRealtime(Date.now(), readers, { aggressiveThreshold });
+    const avgState = getMarketStateMinuteLast5Min();
+    if (avgState) {
+      marketStateRes = {
+        price_score: avgState.price_score,
+        volume_score: avgState.volume_score,
+        state: avgState.state,
+        state_text: avgState.state,
+        sample_count: avgState.count,
+      };
+      logger.debug({ 
+        symbol, 
+        price_score: avgState.price_score.toFixed(2), 
+        volume_score: avgState.volume_score.toFixed(2),
+        sample_count: avgState.count 
+      }, '查询到5分钟市场状态均值');
     }
   } catch (e) {
-    logger.warn({ err: String(e) }, '实时计算市场状态失败，忽略');
+    logger.warn({ err: String(e) }, '查询市场状态失败，忽略');
   }
 
   let halfBars = undefined;
@@ -367,9 +364,10 @@ export default async function rule3Default(ctx, config, helpers) {
     prevClose: Number.isFinite(prevForDisplay) ? prevForDisplay : undefined,
     closePrice: Number.isFinite(closeForDisplay) ? closeForDisplay : (Number.isFinite(closePrice) ? closePrice : undefined),
     deltaPct,
-    total_score: (marketStateRes && typeof marketStateRes.total_score === 'number') ? Number(marketStateRes.total_score.toFixed(3)) : undefined,
-    state_text: marketStateRes ? marketStateRes.state_text : undefined,
-    state: marketStateRes ? marketStateRes.state : undefined,
+    market_price_score: (marketStateRes && typeof marketStateRes.price_score === 'number') ? Number(marketStateRes.price_score.toFixed(2)) : undefined,
+    market_volume_score: (marketStateRes && typeof marketStateRes.volume_score === 'number') ? Number(marketStateRes.volume_score.toFixed(2)) : undefined,
+    market_state_text: marketStateRes ? marketStateRes.state_text : undefined,
+    market_state: marketStateRes ? marketStateRes.state : undefined,
     half_bars_to_half_threshold: typeof halfBars === 'number' ? halfBars : undefined,
     price_change_pct_from_earliest_open: (typeof priceChangePct === 'number') ? Number(priceChangePct.toFixed(3)) : undefined
   }, { strategy: `${helpers.windowMinutes}m_turnover`, text });

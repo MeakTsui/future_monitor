@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS sync_state (
 );
  CREATE TABLE IF NOT EXISTS market_state_minute (
    ts_minute INTEGER PRIMARY KEY,
-   total_score REAL,
+   price_score REAL,
+   volume_score REAL,
    state TEXT,
    details_version INTEGER,
    created_at TEXT
@@ -55,7 +56,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
    symbol_score REAL,
    weight REAL,
    latest_price REAL,
-   min_price_5m REAL,
+   open_price_5m REAL,
    vol_5m REAL,
    avg_vol_5m_5h REAL,
    created_at TEXT,
@@ -146,20 +147,20 @@ export function setSyncState(name, state) {
 }
 
 // Market state APIs
-export function upsertMarketStateMinute({ ts_minute, total_score, state, details_version = 1 }) {
-  const stmt = db.prepare(`INSERT INTO market_state_minute (ts_minute, total_score, state, details_version, created_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(ts_minute) DO UPDATE SET total_score=excluded.total_score, state=excluded.state, details_version=excluded.details_version`);
-  stmt.run(ts_minute, total_score, state, details_version, new Date().toISOString());
+export function upsertMarketStateMinute({ ts_minute, price_score, volume_score, state, details_version = 1 }) {
+  const stmt = db.prepare(`INSERT INTO market_state_minute (ts_minute, price_score, volume_score, state, details_version, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(ts_minute) DO UPDATE SET price_score=excluded.price_score, volume_score=excluded.volume_score, state=excluded.state, details_version=excluded.details_version`);
+  stmt.run(ts_minute, price_score, volume_score, state, details_version, new Date().toISOString());
 }
 
 export function upsertMarketStateSymbolMinute(row) {
   const stmt = db.prepare(`INSERT INTO market_state_symbol_minute (
       ts_minute, symbol, price_score, vol_score, symbol_score, weight,
-      latest_price, min_price_5m, vol_5m, avg_vol_5m_5h, created_at
+      latest_price, open_price_5m, vol_5m, avg_vol_5m_5h, created_at
     ) VALUES (
       @ts_minute, @symbol, @price_score, @vol_score, @symbol_score, @weight,
-      @latest_price, @min_price_5m, @vol_5m, @avg_vol_5m_5h, @created_at
+      @latest_price, @open_price_5m, @vol_5m, @avg_vol_5m_5h, @created_at
     )
     ON CONFLICT(ts_minute, symbol) DO UPDATE SET
       price_score=excluded.price_score,
@@ -167,7 +168,7 @@ export function upsertMarketStateSymbolMinute(row) {
       symbol_score=excluded.symbol_score,
       weight=excluded.weight,
       latest_price=excluded.latest_price,
-      min_price_5m=excluded.min_price_5m,
+      open_price_5m=excluded.open_price_5m,
       vol_5m=excluded.vol_5m,
       avg_vol_5m_5h=excluded.avg_vol_5m_5h`);
   const payload = { ...row, created_at: row.created_at || new Date().toISOString() };
@@ -177,6 +178,44 @@ export function upsertMarketStateSymbolMinute(row) {
 export function getLatestMarketState() {
   const row = db.prepare('SELECT * FROM market_state_minute ORDER BY ts_minute DESC LIMIT 1').get();
   return row || null;
+}
+
+export function getLatestMarketStateMinute() {
+  const row = db.prepare('SELECT * FROM market_state_minute ORDER BY ts_minute DESC LIMIT 1').get();
+  return row || null;
+}
+
+export function getMarketStateMinuteLast5Min() {
+  const now = Date.now();
+  const fiveMinAgo = now - 5 * 60 * 1000;
+  const rows = db.prepare('SELECT * FROM market_state_minute WHERE ts_minute >= ? ORDER BY ts_minute DESC LIMIT 5').all(fiveMinAgo);
+  
+  if (!rows || rows.length === 0) return null;
+  
+  // 计算均值
+  let sumPrice = 0;
+  let sumVolume = 0;
+  let count = 0;
+  
+  for (const row of rows) {
+    if (typeof row.price_score === 'number' && Number.isFinite(row.price_score)) {
+      sumPrice += row.price_score;
+    }
+    if (typeof row.volume_score === 'number' && Number.isFinite(row.volume_score)) {
+      sumVolume += row.volume_score;
+    }
+    count++;
+  }
+  
+  if (count === 0) return null;
+  
+  return {
+    price_score: sumPrice / count,
+    volume_score: sumVolume / count,
+    state: rows[0].state, // 使用最新的 state
+    count: count,
+    latest_ts: rows[0].ts_minute
+  };
 }
 
 export function getMarketStateHistory(from, to, limit = 1000) {
