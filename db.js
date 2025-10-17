@@ -218,6 +218,39 @@ export function getMarketStateMinuteLast5Min() {
   };
 }
 
+export function getMarketStateMinuteLast1Hour() {
+  const now = Date.now();
+  const oneHourAgo = now - 60 * 60 * 1000;
+  const rows = db.prepare('SELECT * FROM market_state_minute WHERE ts_minute >= ? ORDER BY ts_minute DESC LIMIT 60').all(oneHourAgo);
+  
+  if (!rows || rows.length === 0) return null;
+  
+  // 计算均值
+  let sumPrice = 0;
+  let sumVolume = 0;
+  let count = 0;
+  
+  for (const row of rows) {
+    if (typeof row.price_score === 'number' && Number.isFinite(row.price_score)) {
+      sumPrice += row.price_score;
+    }
+    if (typeof row.volume_score === 'number' && Number.isFinite(row.volume_score)) {
+      sumVolume += row.volume_score;
+    }
+    count++;
+  }
+  
+  if (count === 0) return null;
+  
+  return {
+    price_score: sumPrice / count,
+    volume_score: sumVolume / count,
+    state: rows[0].state, // 使用最新的 state
+    count: count,
+    latest_ts: rows[0].ts_minute
+  };
+}
+
 export function getMarketStateHistory(from, to, limit = 1000) {
   if (from && to) {
     return db.prepare('SELECT * FROM market_state_minute WHERE ts_minute >= ? AND ts_minute <= ? ORDER BY ts_minute ASC LIMIT ?')

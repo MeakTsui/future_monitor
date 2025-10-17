@@ -131,6 +131,10 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
       if (typeof extras.market_state !== 'undefined') {
         payload.metrics.market_state = extras.market_state;
       }
+      // 1小时均值
+      if (typeof extras.market_price_score_1h === 'number' && Number.isFinite(extras.market_price_score_1h)) {
+        payload.metrics.market_price_score_1h = extras.market_price_score_1h;
+      }
       
       // 兼容旧版字段（如果存在）
       if (typeof extras.total_score === 'number' && Number.isFinite(extras.total_score)) {

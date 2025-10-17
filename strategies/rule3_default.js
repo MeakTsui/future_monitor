@@ -1,7 +1,7 @@
 // 默认 Rule3 WS 策略（插件化）
 import fetch from "node-fetch";
 import logger from "../logger.js";
-import { getMarketStateMinuteLast5Min } from "../db.js";
+import { getMarketStateMinuteLast5Min, getMarketStateMinuteLast1Hour } from "../db.js";
 import * as helpers from "../alerting/index.js";
 // 行为与内置版本一致：当聚合器计算的滚动成交额 sum >= 阈值 thresholdUsd 时：
 // - 若启用市值过滤(marketCapMaxUsd > 0)，要求市值在 (0, marketCapMaxUsd)
@@ -293,6 +293,7 @@ export default async function rule3Default(ctx, config, helpers) {
 
   // 从数据库查询最近5分钟的市场状态均值（由 market_state_cron.js 定时计算）
   let marketStateRes = null;
+  let marketState1h = null;
   try {
     const avgState = getMarketStateMinuteLast5Min();
     if (avgState) {
@@ -309,6 +310,20 @@ export default async function rule3Default(ctx, config, helpers) {
         volume_score: avgState.volume_score.toFixed(2),
         sample_count: avgState.count 
       }, '查询到5分钟市场状态均值');
+    }
+    
+    // 查询1小时均值
+    const avgState1h = getMarketStateMinuteLast1Hour();
+    if (avgState1h) {
+      marketState1h = {
+        price_score_1h: avgState1h.price_score,
+        sample_count_1h: avgState1h.count,
+      };
+      logger.debug({ 
+        symbol, 
+        price_score_1h: avgState1h.price_score.toFixed(2),
+        sample_count_1h: avgState1h.count 
+      }, '查询到1小时市场状态均值');
     }
   } catch (e) {
     logger.warn({ err: String(e) }, '查询市场状态失败，忽略');
@@ -368,6 +383,7 @@ export default async function rule3Default(ctx, config, helpers) {
     market_volume_score: (marketStateRes && typeof marketStateRes.volume_score === 'number') ? Number(marketStateRes.volume_score.toFixed(2)) : undefined,
     market_state_text: marketStateRes ? marketStateRes.state_text : undefined,
     market_state: marketStateRes ? marketStateRes.state : undefined,
+    market_price_score_1h: (marketState1h && typeof marketState1h.price_score_1h === 'number') ? Number(marketState1h.price_score_1h.toFixed(2)) : undefined,
     half_bars_to_half_threshold: typeof halfBars === 'number' ? halfBars : undefined,
     price_change_pct_from_earliest_open: (typeof priceChangePct === 'number') ? Number(priceChangePct.toFixed(3)) : undefined
   }, { strategy: `${helpers.windowMinutes}m_turnover`, text });
