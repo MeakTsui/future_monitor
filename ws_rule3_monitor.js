@@ -15,10 +15,11 @@ function loadConfig() {
 // Symbol helpers（从合约符号映射到 supply 表的基础币符号）
 function normalizeBaseSymbolFromContract(sym) {
   // 输入：ETHUSDT, 1000SHIBUSDT, BNBUPUSDT, XRPBULLUSDT
+  // 输出：ETH, 1000SHIB, BNB, XRP (保留前缀数字，如 1000)
   let base = sym;
-  base = base.replace(/(USDT|BUSD|USDC)$/i, "");
-  base = base.replace(/(UP|DOWN|BULL|BEAR)$/i, "");
-  base = base.replace(/^(\d{3,})/, "");
+  base = base.replace(/(USDT|BUSD|USDC)$/i, "");  // 移除报价币种
+  base = base.replace(/(UP|DOWN|BULL|BEAR)$/i, ""); // 移除杠杆标记
+  // 不再移除前缀数字，保持与数据库中的 symbol 一致
   return base.toUpperCase();
 }
 
