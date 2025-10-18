@@ -35,6 +35,14 @@
     .controls label {
       margin-right: 10px;
       font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .controls input[type="checkbox"] {
+      cursor: pointer;
+      width: 16px;
+      height: 16px;
     }
     .controls select, .controls button {
       padding: 8px 16px;
@@ -129,6 +137,30 @@
         <option value="60">1小时</option>
       </select>
       
+      <label>
+        <input type="checkbox" id="showRawData" checked onchange="loadData()">
+        显示原始数据
+      </label>
+      
+      <label>均线:</label>
+      <select id="ma1" onchange="loadData()">
+        <option value="">不显示</option>
+        <option value="5" selected>MA5 (5分钟)</option>
+        <option value="10">MA10 (10分钟)</option>
+        <option value="15">MA15 (15分钟)</option>
+        <option value="30">MA30 (30分钟)</option>
+        <option value="60">MA60 (1小时)</option>
+      </select>
+      
+      <select id="ma2" onchange="loadData()">
+        <option value="">不显示</option>
+        <option value="5">MA5 (5分钟)</option>
+        <option value="10">MA10 (10分钟)</option>
+        <option value="15">MA15 (15分钟)</option>
+        <option value="30">MA30 (30分钟)</option>
+        <option value="60" selected>MA60 (1小时)</option>
+      </select>
+      
       <button onclick="loadData()">🔄 刷新数据</button>
       <button onclick="toggleAutoRefresh()">⏱️ <span id="autoRefreshText">启用自动刷新</span></button>
     </div>
@@ -180,8 +212,10 @@
     const SERVER_URL = window.location.origin;
     let priceChart = null;
     let priceSeries = null;
+    let priceMASeries = {}; // 存储均线系列 {window: series}
     let volumeChart = null;
     let volumeSeries = null;
+    let volumeMASeries = {}; // 存储均线系列 {window: series}
     let autoRefreshInterval = null;
 
     function showError(message) {
@@ -305,26 +339,55 @@
         
         const timeRange = parseInt(document.getElementById('timeRange').value);
         const resolution = document.getElementById('resolution').value;
+        const ma1Window = document.getElementById('ma1').value;
+        const ma2Window = document.getElementById('ma2').value;
         
         const to = Math.floor(Date.now() / 1000);
         const from = to - (timeRange * 3600);
+        const fromMs = from * 1000;
+        const toMs = to * 1000;
 
-        const priceUrl = `${SERVER_URL}/tradingview/history?symbol=MARKET_PRICE&resolution=${resolution}&from=${from}&to=${to}`;
-        const volumeUrl = `${SERVER_URL}/tradingview/history?symbol=MARKET_VOLUME&resolution=${resolution}&from=${from}&to=${to}`;
+        // 构建请求
+        const requests = [
+          fetch(`${SERVER_URL}/tradingview/history?symbol=MARKET_PRICE&resolution=${resolution}&from=${from}&to=${to}`),
+          fetch(`${SERVER_URL}/tradingview/history?symbol=MARKET_VOLUME&resolution=${resolution}&from=${from}&to=${to}`)
+        ];
+        
+        // 添加均线请求
+        if (ma1Window) {
+          requests.push(fetch(`${SERVER_URL}/market/state/ma?window=${ma1Window}&from=${fromMs}&to=${toMs}`));
+        }
+        if (ma2Window && ma2Window !== ma1Window) {
+          requests.push(fetch(`${SERVER_URL}/market/state/ma?window=${ma2Window}&from=${fromMs}&to=${toMs}`));
+        }
 
-        const [priceRes, volumeRes] = await Promise.all([
-          fetch(priceUrl),
-          fetch(volumeUrl)
-        ]);
-
-        const priceData = await priceRes.json();
-        const volumeData = await volumeRes.json();
+        const responses = await Promise.all(requests);
+        const priceData = await responses[0].json();
+        const volumeData = await responses[1].json();
+        
+        let ma1Data = null, ma2Data = null;
+        let idx = 2;
+        if (ma1Window) {
+          ma1Data = await responses[idx++].json();
+        }
+        if (ma2Window && ma2Window !== ma1Window) {
+          ma2Data = await responses[idx++].json();
+        } else if (ma2Window === ma1Window) {
+          ma2Data = ma1Data; // 相同窗口，复用数据
+        }
 
         console.log('Price data:', priceData.s, priceData.t?.length || 0, 'points');
         console.log('Volume data:', volumeData.s, volumeData.t?.length || 0, 'points');
+        if (ma1Data) console.log('MA1 data:', ma1Window, 'min,', ma1Data.data?.length || 0, 'points');
+        if (ma2Data) console.log('MA2 data:', ma2Window, 'min,', ma2Data.data?.length || 0, 'points');
 
         if (priceData.s === 'ok' && volumeData.s === 'ok') {
-          updateCharts(priceData, volumeData);
+          updateCharts(priceData, volumeData, {
+            ma1: ma1Data?.data,
+            ma1Window,
+            ma2: ma2Data?.data,
+            ma2Window
+          });
           updateStats(priceData, volumeData);
         } else if (priceData.s === 'no_data') {
           showError('暂无数据。请确保 market_state_cron.js 正在运行。');
@@ -338,13 +401,15 @@
     }
 
     // 更新图表
-    function updateCharts(priceData, volumeData) {
+    function updateCharts(priceData, volumeData, maData = {}) {
       if (!priceSeries || !volumeSeries) {
         console.warn('图表未初始化');
         return;
       }
 
       try {
+        const showRawData = document.getElementById('showRawData').checked;
+        
         // 转换为 TradingView 格式
         const priceChartData = priceData.t.map((time, i) => ({
           time: time,
@@ -356,19 +421,78 @@
           value: volumeData.c[i]
         }));
 
-        // 更新数据
-        priceSeries.setData(priceChartData);
-        volumeSeries.setData(volumeChartData);
+        // 更新主数据（根据复选框决定是否显示）
+        if (showRawData) {
+          priceSeries.setData(priceChartData);
+          volumeSeries.setData(volumeChartData);
+        } else {
+          // 清空原始数据
+          priceSeries.setData([]);
+          volumeSeries.setData([]);
+        }
+
+        // 清理所有旧的均线系列
+        clearAllMASeries(priceChart, priceMASeries);
+        clearAllMASeries(volumeChart, volumeMASeries);
+
+        // 更新均线（创建新的）
+        if (maData.ma1Window && maData.ma1) {
+          updateMASeries(priceChart, priceMASeries, maData.ma1, maData.ma1Window, '#FF6B6B', 'Price');
+          updateMASeries(volumeChart, volumeMASeries, maData.ma1, maData.ma1Window, '#FF6B6B', 'Volume');
+        }
+        if (maData.ma2Window && maData.ma2) {
+          updateMASeries(priceChart, priceMASeries, maData.ma2, maData.ma2Window, '#4ECDC4', 'Price');
+          updateMASeries(volumeChart, volumeMASeries, maData.ma2, maData.ma2Window, '#4ECDC4', 'Volume');
+        }
 
         // 自动调整视图
         priceChart.timeScale().fitContent();
         volumeChart.timeScale().fitContent();
 
-        console.log('✓ 图表更新成功');
+        console.log('✓ 图表更新成功', { showRawData });
       } catch (err) {
         console.error('更新图表失败:', err);
         showError('更新图表失败: ' + err.message);
       }
+    }
+
+    // 清理所有均线系列
+    function clearAllMASeries(chart, seriesMap) {
+      for (const window in seriesMap) {
+        if (seriesMap[window]) {
+          try {
+            chart.removeSeries(seriesMap[window]);
+          } catch (e) {
+            console.warn('移除均线系列失败:', window, e);
+          }
+          delete seriesMap[window];
+        }
+      }
+    }
+
+    // 更新均线系列
+    function updateMASeries(chart, seriesMap, maData, window, color, type) {
+      if (!window || !maData || maData.length === 0) {
+        return;
+      }
+
+      // 创建新系列
+      seriesMap[window] = chart.addLineSeries({
+        color: color,
+        lineWidth: 2,
+        title: `MA${window}`,
+        priceLineVisible: false,
+        lastValueVisible: true,
+      });
+
+      // 转换数据
+      const field = type === 'Price' ? 'price_score' : 'volume_score';
+      const chartData = maData.map(item => ({
+        time: Math.floor(item.ts_minute / 1000),
+        value: item[field]
+      }));
+
+      seriesMap[window].setData(chartData);
     }
 
     // 更新统计信息

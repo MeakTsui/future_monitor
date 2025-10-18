@@ -327,4 +327,49 @@ export function getLatestUniverseSnapshotBefore(ts_minute) {
   };
 }
 
+// 计算指定时间窗口的移动平均线（用于图表显示）
+// windowMinutes: 窗口大小（分钟）
+// from, to: 时间范围（毫秒）
+export function calculateMovingAverage(windowMinutes, from, to) {
+  const rows = db.prepare('SELECT ts_minute, price_score, volume_score FROM market_state_minute WHERE ts_minute >= ? AND ts_minute <= ? ORDER BY ts_minute ASC')
+    .all(from, to);
+  
+  if (!rows || rows.length === 0) return [];
+  
+  const result = [];
+  const windowMs = windowMinutes * 60 * 1000;
+  
+  for (let i = 0; i < rows.length; i++) {
+    const currentTime = rows[i].ts_minute;
+    const windowStart = currentTime - windowMs + 60000; // 包含当前分钟
+    
+    // 收集窗口内的数据
+    let sumPrice = 0;
+    let sumVolume = 0;
+    let count = 0;
+    
+    for (let j = i; j >= 0; j--) {
+      if (rows[j].ts_minute < windowStart) break;
+      if (typeof rows[j].price_score === 'number' && Number.isFinite(rows[j].price_score)) {
+        sumPrice += rows[j].price_score;
+      }
+      if (typeof rows[j].volume_score === 'number' && Number.isFinite(rows[j].volume_score)) {
+        sumVolume += rows[j].volume_score;
+      }
+      count++;
+    }
+    
+    if (count > 0) {
+      result.push({
+        ts_minute: currentTime,
+        price_score: sumPrice / count,
+        volume_score: sumVolume / count,
+        sample_count: count
+      });
+    }
+  }
+  
+  return result;
+}
+
 export default db;

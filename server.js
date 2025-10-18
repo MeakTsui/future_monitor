@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import logger from './logger.js';
-import { getLatestMarketState, getMarketStateHistory, getMarketStateDetails } from './db.js';
+import { getLatestMarketState, getMarketStateHistory, getMarketStateDetails, calculateMovingAverage } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -139,6 +139,25 @@ const server = http.createServer(async (req, res) => {
       const rows = getMarketStateDetails(ts);
       logger.info({ ts, rows: rows.length }, 'details 查询完成');
       return sendJson(res, 200, { data: rows });
+    }
+    
+    // 移动平均线接口
+    if (req.method === 'GET' && pathname === '/market/state/ma') {
+      const q = parseQuery(req.url);
+      const window = q.window ? Number(q.window) : 5; // 默认5分钟
+      const from = q.from !== undefined ? Number(q.from) : undefined;
+      const to = q.to !== undefined ? Number(q.to) : undefined;
+      
+      if (!Number.isFinite(window) || window <= 0) {
+        return sendJson(res, 400, { error: 'invalid_window' });
+      }
+      if ((from !== undefined && !Number.isFinite(from)) || (to !== undefined && !Number.isFinite(to))) {
+        return sendJson(res, 400, { error: 'invalid_timestamp' });
+      }
+      
+      const rows = calculateMovingAverage(window, from, to);
+      logger.info({ window, from, to, rows: rows.length }, 'MA 查询完成');
+      return sendJson(res, 200, { data: rows, window });
     }
     
     // ========== TradingView UDF 接口 ==========
