@@ -138,7 +138,7 @@
       </select>
       
       <label>
-        <input type="checkbox" id="showRawData" checked onchange="loadData()">
+        <input type="checkbox" id="showRawData" onchange="loadData()">
         显示原始数据
       </label>
       
@@ -210,6 +210,7 @@
   <script>
     // 使用相对路径，自动适配当前域名和端口
     const SERVER_URL = window.location.origin;
+    const TIMEZONE_OFFSET = 8 * 3600; // 东8区偏移（秒）
     let priceChart = null;
     let priceSeries = null;
     let priceMASeries = {}; // 存储均线系列 {window: series}
@@ -279,8 +280,8 @@
           priceLineVisible: false,
           lastValueVisible: false,
         }).setData([
-          { time: Math.floor(Date.now() / 1000) - 86400, value: 0 },
-          { time: Math.floor(Date.now() / 1000), value: 0 }
+          { time: Math.floor(Date.now() / 1000) - 86400 + TIMEZONE_OFFSET, value: 0 },
+          { time: Math.floor(Date.now() / 1000) + TIMEZONE_OFFSET, value: 0 }
         ]);
 
         // Volume Chart
@@ -410,14 +411,14 @@
       try {
         const showRawData = document.getElementById('showRawData').checked;
         
-        // 转换为 TradingView 格式
+        // 转换为 TradingView 格式（加上东8区偏移）
         const priceChartData = priceData.t.map((time, i) => ({
-          time: time,
+          time: time + TIMEZONE_OFFSET,
           value: priceData.c[i]
         }));
 
         const volumeChartData = volumeData.t.map((time, i) => ({
-          time: time,
+          time: time + TIMEZONE_OFFSET,
           value: volumeData.c[i]
         }));
 
@@ -485,10 +486,10 @@
         lastValueVisible: true,
       });
 
-      // 转换数据
+      // 转换数据（加上东8区偏移）
       const field = type === 'Price' ? 'price_score' : 'volume_score';
       const chartData = maData.map(item => ({
-        time: Math.floor(item.ts_minute / 1000),
+        time: Math.floor(item.ts_minute / 1000) + TIMEZONE_OFFSET,
         value: item[field]
       }));
 
@@ -507,7 +508,8 @@
       document.getElementById('currentVolume').textContent = currentVolume.toFixed(2);
       document.getElementById('dataPoints').textContent = priceData.t.length;
       
-      const lastTime = new Date(priceData.t[priceData.t.length - 1] * 1000);
+      // 转换为东8区时间显示
+      const lastTime = new Date((priceData.t[priceData.t.length - 1] + TIMEZONE_OFFSET) * 1000);
       document.getElementById('lastUpdate').textContent = lastTime.toLocaleString('zh-CN');
     }
 
