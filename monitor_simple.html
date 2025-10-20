@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>合约监控面板</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .container {
+      display: flex;
+      height: 100vh;
+    }
+
+    /* 左侧列表 */
+    .sidebar {
+      width: 300px;
+      background: #161b22;
+      border-right: 1px solid #30363d;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-header {
+      padding: 16px;
+      border-bottom: 1px solid #30363d;
+    }
+
+    .sidebar-header h2 {
+      font-size: 18px;
+      margin-bottom: 12px;
+      color: #58a6ff;
+    }
+
+    .search-box {
+      width: 100%;
+      padding: 8px 12px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #c9d1d9;
+      font-size: 14px;
+    }
+
+    .search-box:focus {
+      outline: none;
+      border-color: #58a6ff;
+    }
+
+    .symbol-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+
+    .symbol-item {
+      padding: 12px;
+      margin-bottom: 4px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .symbol-item:hover {
+      background: #161b22;
+      border-color: #58a6ff;
+    }
+
+    .symbol-item.active {
+      background: #1f6feb;
+      border-color: #1f6feb;
+      color: #ffffff;
+    }
+
+    .symbol-name {
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .alert-badge {
+      background: #da3633;
+      color: #ffffff;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .alert-badge.tier {
+      background: #f85149;
+    }
+
+    .alert-badge.default {
+      background: #ff6b6b;
+    }
+
+    /* 主区域 */
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .main-header {
+      padding: 16px 24px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .main-header h1 {
+      font-size: 24px;
+      color: #58a6ff;
+    }
+
+    .symbol-info {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .info-item {
+      font-size: 14px;
+    }
+
+    .info-label {
+      color: #8b949e;
+      margin-right: 4px;
+    }
+
+    .info-value {
+      color: #c9d1d9;
+      font-weight: 600;
+    }
+
+    .stats-bar {
+      padding: 8px 24px;
+      background: #0d1117;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      gap: 24px;
+      font-size: 13px;
+    }
+
+    .stat-item {
+      display: flex;
+      gap: 8px;
+    }
+
+    .stat-label {
+      color: #8b949e;
+    }
+
+    .stat-value {
+      color: #58a6ff;
+      font-weight: 600;
+    }
+
+    #chart_container {
+      flex: 1;
+      position: relative;
+      padding: 16px;
+    }
+
+    /* 滚动条样式 */
+    .symbol-list::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .symbol-list::-webkit-scrollbar-track {
+      background: #0d1117;
+    }
+
+    .symbol-list::-webkit-scrollbar-thumb {
+      background: #30363d;
+      border-radius: 4px;
+    }
+
+    .symbol-list::-webkit-scrollbar-thumb:hover {
+      background: #484f58;
+    }
+
+    /* 加载状态 */
+    .loading {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+      color: #8b949e;
+    }
+
+    .no-data {
+      padding: 20px;
+      text-align: center;
+      color: #8b949e;
+    }
+
+    /* 告警标记 Tooltip */
+    .marker-tooltip {
+      position: absolute;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 12px;
+      min-width: 250px;
+      z-index: 2000;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      display: none;
+      pointer-events: none;
+      font-size: 12px;
+    }
+
+    .marker-tooltip.show {
+      display: block;
+    }
+
+    .tooltip-header {
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #58a6ff;
+      font-size: 14px;
+    }
+
+    .tooltip-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+
+    .tooltip-label {
+      color: #8b949e;
+    }
+
+    .tooltip-value {
+      color: #c9d1d9;
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- 左侧币种列表 -->
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <h2>合约币种</h2>
+        <input 
+          type="text" 
+          class="search-box" 
+          id="searchInput" 
+          placeholder="搜索币种..."
+        />
+      </div>
+      <div class="symbol-list" id="symbolList">
+        <div class="loading">加载中...</div>
+      </div>
+    </div>
+
+    <!-- 主区域 -->
+    <div class="main-content">
+      <div class="main-header">
+        <h1 id="currentSymbol">请选择币种</h1>
+        <div class="symbol-info" id="symbolInfo"></div>
+      </div>
+      <div class="stats-bar" id="statsBar">
+        <div class="stat-item">
+          <span class="stat-label">总告警:</span>
+          <span class="stat-value" id="totalAlerts">0</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">默认策略:</span>
+          <span class="stat-value" id="defaultAlerts">0</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">档位策略:</span>
+          <span class="stat-value" id="tierAlerts">0</span>
+        </div>
+      </div>
+      <div id="chart_container"></div>
+    </div>
+  </div>
+
+  <!-- Tooltip -->
+  <div class="marker-tooltip" id="markerTooltip"></div>
+
+  <script>
+    // 全局变量
+    let chart = null;
+    let candleSeries = null;
+    let currentSymbol = null;
+    let allSymbols = [];
+    let alertsData = {};
+    let markers = [];
+    let markerSeries = null;
+
+    // 等待库加载完成
+    function waitForLibrary() {
+      return new Promise((resolve) => {
+        if (typeof LightweightCharts !== 'undefined') {
+          resolve();
+        } else {
+          const checkInterval = setInterval(() => {
+            if (typeof LightweightCharts !== 'undefined') {
+              clearInterval(checkInterval);
+              resolve();
+            }
+          }, 100);
+        }
+      });
+    }
+
+    // 初始化
+    async function init() {
+      // 等待库加载
+      await waitForLibrary();
+      console.log('LightweightCharts 库已加载');
+      
+      await loadSymbols();
+      setupSearch();
+    }
+
+    // 加载币种列表
+    async function loadSymbols() {
+      try {
+        const response = await fetch('/api/symbols');
+        const data = await response.json();
+        allSymbols = data.symbols || [];
+        
+        // 加载告警统计
+        await loadAlertsStats();
+        
+        renderSymbolList(allSymbols);
+      } catch (error) {
+        console.error('加载币种列表失败:', error);
+        document.getElementById('symbolList').innerHTML = 
+          '<div class="no-data">加载失败</div>';
+      }
+    }
+
+    // 加载告警统计
+    async function loadAlertsStats() {
+      try {
+        const response = await fetch('/api/alerts/stats');
+        const data = await response.json();
+        alertsData = data.bySymbol || {};
+        
+        // 更新总计
+        let total = 0, defaultCount = 0, tierCount = 0;
+        Object.values(alertsData).forEach(stat => {
+          total += stat.total;
+          defaultCount += stat.type1;
+          tierCount += stat.type2;
+        });
+        
+        document.getElementById('totalAlerts').textContent = total;
+        document.getElementById('defaultAlerts').textContent = defaultCount;
+        document.getElementById('tierAlerts').textContent = tierCount;
+      } catch (error) {
+        console.error('加载告警统计失败:', error);
+      }
+    }
+
+    // 渲染币种列表
+    function renderSymbolList(symbols) {
+      const listEl = document.getElementById('symbolList');
+      
+      if (symbols.length === 0) {
+        listEl.innerHTML = '<div class="no-data">无币种数据</div>';
+        return;
+      }
+
+      listEl.innerHTML = symbols.map(symbol => {
+        const stats = alertsData[symbol] || { total: 0, type1: 0, type2: 0 };
+        const hasBadge = stats.total > 0;
+        const badgeClass = stats.type2 > 0 ? 'tier' : 'default';
+        
+        return `
+          <div class="symbol-item" data-symbol="${symbol}">
+            <span class="symbol-name">${symbol}</span>
+            ${hasBadge ? `<span class="alert-badge ${badgeClass}">${stats.total}</span>` : ''}
+          </div>
+        `;
+      }).join('');
+
+      // 绑定点击事件
+      listEl.querySelectorAll('.symbol-item').forEach(item => {
+        item.addEventListener('click', () => {
+          const symbol = item.dataset.symbol;
+          selectSymbol(symbol);
+        });
+      });
+    }
+
+    // 搜索功能
+    function setupSearch() {
+      const searchInput = document.getElementById('searchInput');
+      searchInput.addEventListener('input', (e) => {
+        const query = e.target.value.toLowerCase();
+        const filtered = allSymbols.filter(s => 
+          s.toLowerCase().includes(query)
+        );
+        renderSymbolList(filtered);
+      });
+    }
+
+    // 选择币种
+    async function selectSymbol(symbol) {
+      // 更新选中状态
+      document.querySelectorAll('.symbol-item').forEach(item => {
+        item.classList.toggle('active', item.dataset.symbol === symbol);
+      });
+
+      currentSymbol = symbol;
+      document.getElementById('currentSymbol').textContent = symbol;
+
+      // 加载该币种的告警数据
+      await loadSymbolAlerts(symbol);
+
+      // 加载 K 线数据
+      await loadKlineData(symbol);
+    }
+
+    // 加载币种告警数据
+    async function loadSymbolAlerts(symbol) {
+      try {
+        const response = await fetch(`/api/alerts/symbol/${symbol}`);
+        const data = await response.json();
+        markers = data.alerts || [];
+        
+        // 更新币种信息
+        const stats = alertsData[symbol] || { total: 0, type1: 0, type2: 0 };
+        document.getElementById('symbolInfo').innerHTML = `
+          <div class="info-item">
+            <span class="info-label">告警数:</span>
+            <span class="info-value">${stats.total}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">默认:</span>
+            <span class="info-value">${stats.type1}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">档位:</span>
+            <span class="info-value">${stats.type2}</span>
+          </div>
+        `;
+      } catch (error) {
+        console.error('加载告警数据失败:', error);
+        markers = [];
+      }
+    }
+
+    // 加载 K 线数据
+    async function loadKlineData(symbol) {
+      try {
+        // 确保交易对格式正确
+        // 数据库中的交易对应该已经包含 USDT 后缀
+        let binanceSymbol = symbol;
+        
+        // 如果没有 USDT 后缀，添加它
+        if (!symbol.endsWith('USDT')) {
+          binanceSymbol = `${symbol}USDT`;
+        }
+        
+        console.log(`正在加载 ${binanceSymbol} 的 K 线数据...`);
+        
+        // 从 Binance 获取最近 1000 根 1 分钟 K 线
+        const response = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${binanceSymbol}&interval=1m&limit=1000`);
+        
+        if (!response.ok) {
+          let errorMsg = `HTTP ${response.status}`;
+          try {
+            const error = await response.json();
+            errorMsg = error.msg || errorMsg;
+          } catch (e) {
+            // 无法解析错误响应
+          }
+          throw new Error(`Binance API 错误: ${errorMsg}`);
+        }
+        
+        const data = await response.json();
+        
+        if (!Array.isArray(data) || data.length === 0) {
+          throw new Error('没有返回 K 线数据');
+        }
+        
+        // 转换数据格式
+        const candleData = data.map(k => ({
+          time: Math.floor(k[0] / 1000), // 转换为秒
+          open: parseFloat(k[1]),
+          high: parseFloat(k[2]),
+          low: parseFloat(k[3]),
+          close: parseFloat(k[4]),
+        }));
+
+        console.log(`成功加载 ${candleData.length} 根 K 线`);
+
+        // 初始化或更新图表
+        if (!chart) {
+          initChart();
+        }
+        
+        candleSeries.setData(candleData);
+        
+        // 绘制告警标记
+        drawAlertMarkers();
+        
+      } catch (error) {
+        console.error('加载 K 线数据失败:', error);
+        alert(`加载 ${symbol} 的 K 线数据失败: ${error.message}\n\n请确认该交易对在 Binance 合约市场存在。`);
+      }
+    }
+
+    // 初始化图表
+    function initChart() {
+      const container = document.getElementById('chart_container');
+      
+      // 检查 LightweightCharts 是否加载
+      if (typeof LightweightCharts === 'undefined') {
+        console.error('LightweightCharts 库未加载');
+        alert('图表库加载失败，请刷新页面重试');
+        return;
+      }
+      
+      console.log('开始创建图表...', {
+        containerWidth: container.clientWidth,
+        containerHeight: container.clientHeight,
+        LightweightCharts: typeof LightweightCharts,
+        createChart: typeof LightweightCharts.createChart
+      });
+      
+      try {
+        chart = LightweightCharts.createChart(container, {
+          width: container.clientWidth,
+          height: container.clientHeight,
+          layout: {
+            background: { color: '#0d1117' },
+            textColor: '#c9d1d9',
+          },
+          grid: {
+            vertLines: { color: '#30363d' },
+            horzLines: { color: '#30363d' },
+          },
+          timeScale: {
+            timeVisible: true,
+            secondsVisible: false,
+            borderColor: '#30363d',
+          },
+          rightPriceScale: {
+            borderColor: '#30363d',
+          },
+        });
+
+        console.log('图表创建成功，chart 对象:', chart);
+        console.log('可用方法:', Object.keys(chart));
+
+        // 使用正确的 API 方法名
+        candleSeries = chart.addCandlestickSeries({
+          upColor: '#26a69a',
+          downColor: '#ef5350',
+          borderUpColor: '#26a69a',
+          borderDownColor: '#ef5350',
+          wickUpColor: '#26a69a',
+          wickDownColor: '#ef5350',
+        });
+
+        console.log('K线系列创建成功');
+
+        // 响应式调整
+        const resizeHandler = () => {
+          if (chart) {
+            chart.applyOptions({
+              width: container.clientWidth,
+              height: container.clientHeight,
+            });
+          }
+        };
+        
+        window.addEventListener('resize', resizeHandler);
+      } catch (error) {
+        console.error('创建图表失败:', error);
+        alert(`创建图表失败: ${error.message}`);
+      }
+    }
+
+    // 绘制告警标记
+    function drawAlertMarkers() {
+      if (!candleSeries || !markers || markers.length === 0) return;
+
+      try {
+        const chartMarkers = markers.map(alert => {
+          const emoji = alert.type === '2' ? '🔥' : '‼️';
+          const color = alert.type === '2' ? '#f85149' : '#ff6b6b';
+          
+          return {
+            time: Math.floor(alert.timestamp / 1000), // 转换为秒
+            position: 'aboveBar',
+            color: color,
+            shape: 'circle',
+            text: emoji,
+            size: 2,
+          };
+        });
+
+        candleSeries.setMarkers(chartMarkers);
+        console.log(`绘制了 ${chartMarkers.length} 个告警标记`);
+      } catch (error) {
+        console.error('绘制标记失败:', error);
+      }
+    }
+
+    // 启动 - 等待 DOM 和库都加载完成
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  </script>
+</body>
+</html>

@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import logger from './logger.js';
-import { getLatestMarketState, getMarketStateHistory, getMarketStateDetails, calculateMovingAverage } from './db.js';
+import { getLatestMarketState, getMarketStateHistory, getMarketStateDetails, calculateMovingAverage, getAllSymbols, getAlertsStatsBySymbol, getSymbolAlerts } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -111,6 +111,86 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         logger.error({ err: err.message }, '读取图表页面失败');
         return sendHtml(res, 500, '<h1>500 - 页面加载失败</h1><p>' + err.message + '</p>');
+      }
+    }
+    
+    // 1.1 监控面板页面（简化版，推荐）
+    if (req.method === 'GET' && pathname === '/monitor') {
+      try {
+        const htmlPath = path.join(__dirname, 'monitor_simple.html');
+        const html = fs.readFileSync(htmlPath, 'utf-8');
+        logger.info({ path: pathname }, '返回监控面板页面（简化版）');
+        return sendHtml(res, 200, html);
+      } catch (err) {
+        logger.error({ err: err.message }, '读取监控面板页面失败');
+        return sendHtml(res, 500, '<h1>500 - 页面加载失败</h1><p>' + err.message + '</p>');
+      }
+    }
+    
+    // 1.1.1 监控面板页面（TradingView 版本）
+    if (req.method === 'GET' && pathname === '/monitor/tv') {
+      try {
+        const htmlPath = path.join(__dirname, 'monitor_dashboard.html');
+        const html = fs.readFileSync(htmlPath, 'utf-8');
+        logger.info({ path: pathname }, '返回监控面板页面（TradingView 版）');
+        return sendHtml(res, 200, html);
+      } catch (err) {
+        logger.error({ err: err.message }, '读取监控面板页面失败');
+        return sendHtml(res, 500, '<h1>500 - 页面加载失败</h1><p>' + err.message + '</p>');
+      }
+    }
+    
+    // 1.1.2 测试页面
+    if (req.method === 'GET' && pathname === '/test') {
+      try {
+        const htmlPath = path.join(__dirname, 'test_symbols.html');
+        const html = fs.readFileSync(htmlPath, 'utf-8');
+        logger.info({ path: pathname }, '返回测试页面');
+        return sendHtml(res, 200, html);
+      } catch (err) {
+        logger.error({ err: err.message }, '读取测试页面失败');
+        return sendHtml(res, 500, '<h1>500 - 页面加载失败</h1><p>' + err.message + '</p>');
+      }
+    }
+    
+    // 1.2 获取所有币种列表
+    if (req.method === 'GET' && pathname === '/api/symbols') {
+      try {
+        const symbols = getAllSymbols();
+        logger.info({ count: symbols.length }, '返回币种列表');
+        return sendJson(res, 200, { symbols });
+      } catch (err) {
+        logger.error({ err: err.message }, '获取币种列表失败');
+        return sendJson(res, 500, { error: err.message });
+      }
+    }
+    
+    // 1.3 获取告警统计
+    if (req.method === 'GET' && pathname === '/api/alerts/stats') {
+      try {
+        const q = parseQuery(req.url);
+        const hours = q.hours ? Number(q.hours) : 24;
+        const bySymbol = getAlertsStatsBySymbol(hours);
+        logger.info({ hours, symbols: Object.keys(bySymbol).length }, '返回告警统计');
+        return sendJson(res, 200, { bySymbol });
+      } catch (err) {
+        logger.error({ err: err.message }, '获取告警统计失败');
+        return sendJson(res, 500, { error: err.message });
+      }
+    }
+    
+    // 1.4 获取单个币种的告警历史
+    if (req.method === 'GET' && pathname.startsWith('/api/alerts/symbol/')) {
+      try {
+        const symbol = pathname.split('/').pop();
+        const q = parseQuery(req.url);
+        const hours = q.hours ? Number(q.hours) : 24;
+        const alerts = getSymbolAlerts(symbol, hours);
+        logger.info({ symbol, hours, count: alerts.length }, '返回币种告警历史');
+        return sendJson(res, 200, { alerts });
+      } catch (err) {
+        logger.error({ err: err.message }, '获取币种告警历史失败');
+        return sendJson(res, 500, { error: err.message });
       }
     }
     

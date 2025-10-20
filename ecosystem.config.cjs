@@ -1,8 +1,20 @@
 module.exports = {
   apps: [
+    // 市场状态计算已集成到 ws-rule3 进程中，每秒计算，每分钟保存
+    // {
+    //   name: 'market-state',
+    //   script: 'market_state_cron.js',
+    //   instances: 1,
+    //   exec_mode: 'fork',
+    //   autorestart: true,
+    //   watch: false,
+    //   env: {
+    //     LOG_LEVEL: process.env.LOG_LEVEL || 'info'
+    //   }
+    // },
     {
-      name: 'market-state',
-      script: 'market_state_cron.js',
+      name: 'ws-rule3',
+      script: 'ws_rule3_monitor.js',
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,
@@ -57,6 +69,6 @@ module.exports = {
       env: {
         LOG_LEVEL: process.env.LOG_LEVEL || 'info'
       }
-    },
+    }
   ]
 };

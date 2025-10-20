@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Market State - TradingView Lightweight Charts</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+    }
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    h1 {
+      color: #333;
+      margin-bottom: 20px;
+      font-size: 24px;
+    }
+    .controls {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .controls label {
+      margin-right: 10px;
+      font-weight: 500;
+    }
+    .controls select, .controls button {
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: 1px solid #ddd;
+      margin-right: 10px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .controls button {
+      background: #2196F3;
+      color: white;
+      border: none;
+    }
+    .controls button:hover {
+      background: #1976D2;
+    }
+    .chart-container {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    .chart-wrapper {
+      position: relative;
+      height: 400px;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+    .stat-card {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .stat-card h3 {
+      font-size: 14px;
+      color: #666;
+      margin-bottom: 8px;
+    }
+    .stat-card .value {
+      font-size: 28px;
+      font-weight: bold;
+      color: #333;
+    }
+    .stat-card .value.positive {
+      color: #4CAF50;
+    }
+    .stat-card .value.negative {
+      color: #F44336;
+    }
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #666;
+    }
+    .error {
+      background: #ffebee;
+      color: #c62828;
+      padding: 15px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📊 Market State Monitor - 数据可视化</h1>
+    
+    <div class="controls">
+      <label>时间范围:</label>
+      <select id="timeRange">
+        <option value="1">最近1小时</option>
+        <option value="6">最近6小时</option>
+        <option value="24" selected>最近24小时</option>
+        <option value="72">最近3天</option>
+        <option value="168">最近7天</option>
+      </select>
+      
+      <label>分辨率:</label>
+      <select id="resolution">
+        <option value="1">1分钟</option>
+        <option value="5" selected>5分钟</option>
+        <option value="15">15分钟</option>
+        <option value="60">1小时</option>
+      </select>
+      
+      <button onclick="loadData()">🔄 刷新数据</button>
+      <button onclick="toggleAutoRefresh()">⏱️ <span id="autoRefreshText">启用自动刷新</span></button>
+    </div>
+
+    <div id="error" class="error" style="display: none;"></div>
+
+    <div class="stats">
+      <div class="stat-card">
+        <h3>当前价格得分</h3>
+        <div class="value" id="currentPrice">--</div>
+      </div>
+      <div class="stat-card">
+        <h3>当前成交量得分</h3>
+        <div class="value" id="currentVolume">--</div>
+      </div>
+      <div class="stat-card">
+        <h3>数据点数量</h3>
+        <div class="value" id="dataPoints">--</div>
+      </div>
+      <div class="stat-card">
+        <h3>最后更新</h3>
+        <div class="value" style="font-size: 16px;" id="lastUpdate">--</div>
+      </div>
+    </div>
+
+    <div class="chart-container">
+      <h2 style="margin-bottom: 15px; font-size: 18px;">Market Price Score (-100 ~ 100)</h2>
+      <div class="chart-wrapper">
+        <canvas id="priceChart"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-container">
+      <h2 style="margin-bottom: 15px; font-size: 18px;">Market Volume Score (0 ~ 100)</h2>
+      <div class="chart-wrapper">
+        <canvas id="volumeChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const SERVER_URL = 'http://localhost:8080';
+    let priceChart = null;
+    let priceSeries = null;
+    let volumeChart = null;
+    let volumeSeries = null;
+    let autoRefreshInterval = null;
+
+    // 显示错误
+    function showError(message) {
+      const errorEl = document.getElementById('error');
+      if (errorEl) {
+        errorEl.textContent = '❌ ' + message;
+        errorEl.style.display = 'block';
+      }
+      console.error('Error:', message);
+    }
+
+    function hideError() {
+      document.getElementById('error').style.display = 'none';
+    }
+
+    // 初始化 TradingView 图表
+    function initCharts() {
+      try {
+        console.log('初始化 TradingView 图表...');
+        
+        if (typeof LightweightCharts === 'undefined') {
+          throw new Error('TradingView Lightweight Charts 未加载');
+        }
+        console.log('✓ TradingView Lightweight Charts 已加载');
+        
+        const commonOptions = {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: {
+            mode: 'index',
+            intersect: false,
+          },
+          plugins: {
+            legend: {
+              display: false
+            },
+            tooltip: {
+              callbacks: {
+                title: (items) => {
+                  const date = new Date(items[0].parsed.x);
+                  return date.toLocaleString('zh-CN');
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              type: 'time',
+              time: {
+                displayFormats: {
+                  minute: 'HH:mm',
+                  hour: 'MM-DD HH:mm',
+                  day: 'MM-DD'
+                }
+              },
+              grid: {
+                display: false
+              }
+            },
+            y: {
+              grid: {
+                color: 'rgba(0, 0, 0, 0.05)'
+              }
+            }
+          }
+        };
+
+        // Price Chart
+        console.log('创建 Price Chart...');
+        const priceCanvas = document.getElementById('priceChart');
+        if (!priceCanvas) {
+          throw new Error('找不到 priceChart canvas 元素');
+        }
+        console.log('priceChart canvas 元素找到');
+        
+        const priceCtx = priceCanvas.getContext('2d');
+        if (!priceCtx) {
+          throw new Error('无法获取 priceChart 2D 上下文');
+        }
+        
+        priceChart = new Chart(priceCtx, {
+          type: 'line',
+          data: {
+            datasets: [{
+              label: 'Price Score',
+              data: [],
+              borderColor: 'rgb(33, 150, 243)',
+              backgroundColor: 'rgba(33, 150, 243, 0.1)',
+              borderWidth: 2,
+              fill: true,
+              tension: 0.4
+            }]
+          },
+          options: {
+            ...commonOptions,
+            scales: {
+              ...commonOptions.scales,
+              y: {
+                ...commonOptions.scales.y,
+                min: -100,
+                max: 100,
+                ticks: {
+                  callback: (value) => value.toFixed(0)
+                }
+              }
+            }
+          }
+        });
+        
+        if (!priceChart) {
+          throw new Error('Price Chart 创建失败');
+        }
+        console.log('Price Chart 创建成功');
+
+        // Volume Chart
+        console.log('创建 Volume Chart...');
+        const volumeCanvas = document.getElementById('volumeChart');
+        if (!volumeCanvas) {
+          throw new Error('找不到 volumeChart canvas 元素');
+        }
+        console.log('volumeChart canvas 元素找到');
+        
+        const volumeCtx = volumeCanvas.getContext('2d');
+        if (!volumeCtx) {
+          throw new Error('无法获取 volumeChart 2D 上下文');
+        }
+        
+        volumeChart = new Chart(volumeCtx, {
+          type: 'line',
+          data: {
+            datasets: [{
+              label: 'Volume Score',
+              data: [],
+              borderColor: 'rgb(76, 175, 80)',
+              backgroundColor: 'rgba(76, 175, 80, 0.1)',
+              borderWidth: 2,
+              fill: true,
+              tension: 0.4
+            }]
+          },
+          options: {
+            ...commonOptions,
+            scales: {
+              ...commonOptions.scales,
+              y: {
+                ...commonOptions.scales.y,
+                min: 0,
+                max: 100,
+                ticks: {
+                  callback: (value) => value.toFixed(0)
+                }
+              }
+            }
+          }
+        });
+        
+        if (!volumeChart) {
+          throw new Error('Volume Chart 创建失败');
+        }
+        console.log('Volume Chart 创建成功');
+        
+        console.log('✓ 所有图表初始化成功', { priceChart: !!priceChart, volumeChart: !!volumeChart });
+      } catch (err) {
+        console.error('✗ 图表初始化失败:', err);
+        showError('图表初始化失败: ' + err.message);
+        // 确保变量被重置
+        priceChart = null;
+        volumeChart = null;
+      }
+    }
+
+    // 加载数据
+    async function loadData() {
+      const timeRange = parseInt(document.getElementById('timeRange').value);
+      const resolution = document.getElementById('resolution').value;
+      
+      const to = Math.floor(Date.now() / 1000);
+      const from = to - (timeRange * 3600);
+
+      try {
+        document.getElementById('error').style.display = 'none';
+        
+        // 使用 TradingView history 接口
+        const priceUrl = `${SERVER_URL}/tradingview/history?symbol=MARKET_PRICE&resolution=${resolution}&from=${from}&to=${to}`;
+        const volumeUrl = `${SERVER_URL}/tradingview/history?symbol=MARKET_VOLUME&resolution=${resolution}&from=${from}&to=${to}`;
+
+        const [priceRes, volumeRes] = await Promise.all([
+          fetch(priceUrl),
+          fetch(volumeUrl)
+        ]);
+
+        const priceData = await priceRes.json();
+        const volumeData = await volumeRes.json();
+
+        if (priceData.s === 'ok' && volumeData.s === 'ok') {
+          updateCharts(priceData, volumeData);
+          updateStats(priceData, volumeData);
+        } else {
+          showError('无数据或数据加载失败');
+        }
+      } catch (err) {
+        showError('加载数据失败: ' + err.message);
+      }
+    }
+
+    // 更新图表
+    function updateCharts(priceData, volumeData) {
+      try {
+        console.log('更新图表...', { 
+          priceChart: !!priceChart, 
+          volumeChart: !!volumeChart,
+          priceDataPoints: priceData?.t?.length,
+          volumeDataPoints: volumeData?.t?.length
+        });
+        
+        if (!priceChart || !volumeChart) {
+          throw new Error('图表未初始化');
+        }
+        
+        if (!priceData?.t || !priceData?.c) {
+          throw new Error('价格数据格式错误');
+        }
+        
+        if (!volumeData?.t || !volumeData?.c) {
+          throw new Error('成交量数据格式错误');
+        }
+        
+        // Price Chart
+        const pricePoints = priceData.t.map((time, i) => ({
+          x: time * 1000,
+          y: priceData.c[i]
+        }));
+        priceChart.data.datasets[0].data = pricePoints;
+        priceChart.update('none');
+
+        // Volume Chart
+        const volumePoints = volumeData.t.map((time, i) => ({
+          x: time * 1000,
+          y: volumeData.c[i]
+        }));
+        volumeChart.data.datasets[0].data = volumePoints;
+        volumeChart.update('none');
+        
+        console.log('图表更新成功');
+      } catch (err) {
+        console.error('更新图表失败:', err);
+        showError('更新图表失败: ' + err.message);
+      }
+    }
+
+    // 更新统计信息
+    function updateStats(priceData, volumeData) {
+      const currentPrice = priceData.c[priceData.c.length - 1];
+      const currentVolume = volumeData.c[volumeData.c.length - 1];
+      
+      const priceEl = document.getElementById('currentPrice');
+      priceEl.textContent = currentPrice.toFixed(2);
+      priceEl.className = 'value ' + (currentPrice > 0 ? 'positive' : currentPrice < 0 ? 'negative' : '');
+      
+      document.getElementById('currentVolume').textContent = currentVolume.toFixed(2);
+      document.getElementById('dataPoints').textContent = priceData.t.length;
+      
+      const lastTime = new Date(priceData.t[priceData.t.length - 1] * 1000);
+      document.getElementById('lastUpdate').textContent = lastTime.toLocaleString('zh-CN');
+    }
+
+    // 自动刷新
+    function toggleAutoRefresh() {
+      if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+        autoRefreshInterval = null;
+        document.getElementById('autoRefreshText').textContent = '启用自动刷新';
+      } else {
+        autoRefreshInterval = setInterval(loadData, 60000); // 每分钟刷新
+        document.getElementById('autoRefreshText').textContent = '停止自动刷新';
+        loadData();
+      }
+    }
+
+    // 初始化
+    window.addEventListener('load', () => {
+      console.log('页面加载完成，开始初始化...');
+      try {
+        initCharts();
+        
+        // 验证图表是否初始化成功
+        if (!priceChart || !volumeChart) {
+          showError('图表初始化失败，请刷新页面重试');
+          console.error('图表初始化后仍为 null');
+          return;
+        }
+        
+        console.log('图表初始化验证通过，开始加载数据');
+        loadData();
+      } catch (err) {
+        console.error('初始化过程出错:', err);
+        showError('初始化失败: ' + err.message);
+      }
+    });
+  </script>
+</body>
+</html>

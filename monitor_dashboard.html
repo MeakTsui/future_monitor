@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>合约监控面板</title>
+  <script src="https://unpkg.com/tradingview-charting-library@latest/charting_library/charting_library.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .container {
+      display: flex;
+      height: 100vh;
+    }
+
+    /* 左侧列表 */
+    .sidebar {
+      width: 300px;
+      background: #161b22;
+      border-right: 1px solid #30363d;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-header {
+      padding: 16px;
+      border-bottom: 1px solid #30363d;
+    }
+
+    .sidebar-header h2 {
+      font-size: 18px;
+      margin-bottom: 12px;
+      color: #58a6ff;
+    }
+
+    .search-box {
+      width: 100%;
+      padding: 8px 12px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #c9d1d9;
+      font-size: 14px;
+    }
+
+    .search-box:focus {
+      outline: none;
+      border-color: #58a6ff;
+    }
+
+    .symbol-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+
+    .symbol-item {
+      padding: 12px;
+      margin-bottom: 4px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .symbol-item:hover {
+      background: #161b22;
+      border-color: #58a6ff;
+    }
+
+    .symbol-item.active {
+      background: #1f6feb;
+      border-color: #1f6feb;
+      color: #ffffff;
+    }
+
+    .symbol-name {
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .alert-badge {
+      background: #da3633;
+      color: #ffffff;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .alert-badge.tier {
+      background: #f85149;
+    }
+
+    .alert-badge.default {
+      background: #ff6b6b;
+    }
+
+    /* 主区域 */
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .main-header {
+      padding: 16px 24px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .main-header h1 {
+      font-size: 24px;
+      color: #58a6ff;
+    }
+
+    .symbol-info {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .info-item {
+      font-size: 14px;
+    }
+
+    .info-label {
+      color: #8b949e;
+      margin-right: 4px;
+    }
+
+    .info-value {
+      color: #c9d1d9;
+      font-weight: 600;
+    }
+
+    #tv_chart_container {
+      flex: 1;
+      position: relative;
+    }
+
+    /* 滚动条样式 */
+    .symbol-list::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .symbol-list::-webkit-scrollbar-track {
+      background: #0d1117;
+    }
+
+    .symbol-list::-webkit-scrollbar-thumb {
+      background: #30363d;
+      border-radius: 4px;
+    }
+
+    .symbol-list::-webkit-scrollbar-thumb:hover {
+      background: #484f58;
+    }
+
+    /* 加载状态 */
+    .loading {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+      color: #8b949e;
+    }
+
+    .no-data {
+      padding: 20px;
+      text-align: center;
+      color: #8b949e;
+    }
+
+    /* 告警标记样式 */
+    .alert-marker {
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      cursor: pointer;
+      z-index: 1000;
+    }
+
+    .alert-marker.type-1 {
+      background: #ff6b6b;
+      border: 2px solid #ffffff;
+    }
+
+    .alert-marker.type-2 {
+      background: #f85149;
+      border: 2px solid #ffffff;
+    }
+
+    /* Tooltip */
+    .alert-tooltip {
+      position: absolute;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 12px;
+      min-width: 250px;
+      z-index: 2000;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      display: none;
+      pointer-events: none;
+    }
+
+    .alert-tooltip.show {
+      display: block;
+    }
+
+    .tooltip-header {
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #58a6ff;
+      font-size: 14px;
+    }
+
+    .tooltip-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+
+    .tooltip-label {
+      color: #8b949e;
+    }
+
+    .tooltip-value {
+      color: #c9d1d9;
+      font-weight: 500;
+    }
+
+    .stats-bar {
+      padding: 8px 24px;
+      background: #0d1117;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      gap: 24px;
+      font-size: 13px;
+    }
+
+    .stat-item {
+      display: flex;
+      gap: 8px;
+    }
+
+    .stat-label {
+      color: #8b949e;
+    }
+
+    .stat-value {
+      color: #58a6ff;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- 左侧币种列表 -->
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <h2>合约币种</h2>
+        <input 
+          type="text" 
+          class="search-box" 
+          id="searchInput" 
+          placeholder="搜索币种..."
+        />
+      </div>
+      <div class="symbol-list" id="symbolList">
+        <div class="loading">加载中...</div>
+      </div>
+    </div>
+
+    <!-- 主区域 -->
+    <div class="main-content">
+      <div class="main-header">
+        <h1 id="currentSymbol">请选择币种</h1>
+        <div class="symbol-info" id="symbolInfo"></div>
+      </div>
+      <div class="stats-bar" id="statsBar">
+        <div class="stat-item">
+          <span class="stat-label">总告警:</span>
+          <span class="stat-value" id="totalAlerts">0</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">默认策略:</span>
+          <span class="stat-value" id="defaultAlerts">0</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">档位策略:</span>
+          <span class="stat-value" id="tierAlerts">0</span>
+        </div>
+      </div>
+      <div id="tv_chart_container"></div>
+    </div>
+  </div>
+
+  <!-- Tooltip -->
+  <div class="alert-tooltip" id="alertTooltip"></div>
+
+  <script>
+    // 全局变量
+    let tvWidget = null;
+    let currentSymbol = null;
+    let allSymbols = [];
+    let alertsData = {};
+    let markers = [];
+
+    // 初始化
+    async function init() {
+      await loadSymbols();
+      setupSearch();
+    }
+
+    // 加载币种列表
+    async function loadSymbols() {
+      try {
+        const response = await fetch('/api/symbols');
+        const data = await response.json();
+        allSymbols = data.symbols || [];
+        
+        // 加载告警统计
+        await loadAlertsStats();
+        
+        renderSymbolList(allSymbols);
+      } catch (error) {
+        console.error('加载币种列表失败:', error);
+        document.getElementById('symbolList').innerHTML = 
+          '<div class="no-data">加载失败</div>';
+      }
+    }
+
+    // 加载告警统计
+    async function loadAlertsStats() {
+      try {
+        const response = await fetch('/api/alerts/stats');
+        const data = await response.json();
+        alertsData = data.bySymbol || {};
+        
+        // 更新总计
+        let total = 0, defaultCount = 0, tierCount = 0;
+        Object.values(alertsData).forEach(stat => {
+          total += stat.total;
+          defaultCount += stat.type1;
+          tierCount += stat.type2;
+        });
+        
+        document.getElementById('totalAlerts').textContent = total;
+        document.getElementById('defaultAlerts').textContent = defaultCount;
+        document.getElementById('tierAlerts').textContent = tierCount;
+      } catch (error) {
+        console.error('加载告警统计失败:', error);
+      }
+    }
+
+    // 渲染币种列表
+    function renderSymbolList(symbols) {
+      const listEl = document.getElementById('symbolList');
+      
+      if (symbols.length === 0) {
+        listEl.innerHTML = '<div class="no-data">无币种数据</div>';
+        return;
+      }
+
+      listEl.innerHTML = symbols.map(symbol => {
+        const stats = alertsData[symbol] || { total: 0, type1: 0, type2: 0 };
+        const hasBadge = stats.total > 0;
+        const badgeClass = stats.type2 > 0 ? 'tier' : 'default';
+        
+        return `
+          <div class="symbol-item" data-symbol="${symbol}">
+            <span class="symbol-name">${symbol}</span>
+            ${hasBadge ? `<span class="alert-badge ${badgeClass}">${stats.total}</span>` : ''}
+          </div>
+        `;
+      }).join('');
+
+      // 绑定点击事件
+      listEl.querySelectorAll('.symbol-item').forEach(item => {
+        item.addEventListener('click', () => {
+          const symbol = item.dataset.symbol;
+          selectSymbol(symbol);
+        });
+      });
+    }
+
+    // 搜索功能
+    function setupSearch() {
+      const searchInput = document.getElementById('searchInput');
+      searchInput.addEventListener('input', (e) => {
+        const query = e.target.value.toLowerCase();
+        const filtered = allSymbols.filter(s => 
+          s.toLowerCase().includes(query)
+        );
+        renderSymbolList(filtered);
+      });
+    }
+
+    // 选择币种
+    async function selectSymbol(symbol) {
+      // 更新选中状态
+      document.querySelectorAll('.symbol-item').forEach(item => {
+        item.classList.toggle('active', item.dataset.symbol === symbol);
+      });
+
+      currentSymbol = symbol;
+      document.getElementById('currentSymbol').textContent = symbol;
+
+      // 加载该币种的告警数据
+      await loadSymbolAlerts(symbol);
+
+      // 初始化或更新图表
+      if (tvWidget) {
+        tvWidget.setSymbol(`BINANCE:${symbol}`, '1', () => {
+          console.log('Symbol changed to', symbol);
+          drawAlertMarkers();
+        });
+      } else {
+        initTradingView(symbol);
+      }
+    }
+
+    // 加载币种告警数据
+    async function loadSymbolAlerts(symbol) {
+      try {
+        const response = await fetch(`/api/alerts/symbol/${symbol}`);
+        const data = await response.json();
+        markers = data.alerts || [];
+        
+        // 更新币种信息
+        const stats = alertsData[symbol] || { total: 0, type1: 0, type2: 0 };
+        document.getElementById('symbolInfo').innerHTML = `
+          <div class="info-item">
+            <span class="info-label">告警数:</span>
+            <span class="info-value">${stats.total}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">默认:</span>
+            <span class="info-value">${stats.type1}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">档位:</span>
+            <span class="info-value">${stats.type2}</span>
+          </div>
+        `;
+      } catch (error) {
+        console.error('加载告警数据失败:', error);
+        markers = [];
+      }
+    }
+
+    // 初始化 TradingView
+    function initTradingView(symbol) {
+      // 使用 TradingView 的公共数据源
+      tvWidget = new TradingView.widget({
+        symbol: `BINANCE:${symbol}`,
+        interval: '1',
+        container: 'tv_chart_container',
+        locale: 'zh_CN',
+        fullscreen: false,
+        autosize: true,
+        theme: 'dark',
+        timezone: 'Asia/Shanghai', // 东8区
+        toolbar_bg: '#0d1117',
+        disabled_features: [
+          'use_localstorage_for_settings',
+          'header_symbol_search',
+          'header_compare',
+        ],
+        enabled_features: ['study_templates'],
+        overrides: {
+          'paneProperties.background': '#0d1117',
+          'paneProperties.backgroundType': 'solid',
+          'mainSeriesProperties.candleStyle.upColor': '#26a69a',
+          'mainSeriesProperties.candleStyle.downColor': '#ef5350',
+          'mainSeriesProperties.candleStyle.borderUpColor': '#26a69a',
+          'mainSeriesProperties.candleStyle.borderDownColor': '#ef5350',
+          'mainSeriesProperties.candleStyle.wickUpColor': '#26a69a',
+          'mainSeriesProperties.candleStyle.wickDownColor': '#ef5350',
+        },
+      });
+
+      tvWidget.onChartReady(() => {
+        console.log('Chart is ready');
+        drawAlertMarkers();
+      });
+    }
+
+    // 绘制告警标记
+    function drawAlertMarkers() {
+      if (!tvWidget || !markers || markers.length === 0) return;
+
+      try {
+        const chart = tvWidget.activeChart();
+        
+        // 转换为 TradingView 标记格式
+        const tvMarkers = markers.map(alert => {
+          const type = alert.type === '2' ? 'tier' : 'default';
+          const color = alert.type === '2' ? '#f85149' : '#ff6b6b';
+          const emoji = alert.type === '2' ? '🔥' : '‼️';
+          
+          return {
+            id: alert.id,
+            time: Math.floor(alert.timestamp / 1000), // 转换为秒
+            color: color,
+            text: emoji,
+            label: emoji,
+            labelFontColor: '#ffffff',
+            minSize: 20,
+            tooltip: [
+              `时间: ${new Date(alert.timestamp).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+              `策略: ${alert.type === '2' ? '档位策略' : '默认策略'}`,
+              `成交额: $${(alert.turnover / 1000000).toFixed(2)}M`,
+              alert.marketCap ? `市值: $${(alert.marketCap / 1000000).toFixed(2)}M` : '',
+              alert.ratio ? `倍数: ${alert.ratio.toFixed(3)}` : '',
+              alert.deltaPct ? `涨跌: ${(alert.deltaPct * 100).toFixed(2)}%` : '',
+            ].filter(Boolean).join('\n'),
+          };
+        });
+
+        // 创建形状
+        tvMarkers.forEach(marker => {
+          chart.createShape(
+            { time: marker.time, price: 0 }, // price 会自动调整
+            {
+              shape: 'icon',
+              overrides: {
+                color: marker.color,
+                size: marker.minSize,
+                icon: 0x25CF, // 圆点
+              },
+              text: marker.text,
+              tooltip: marker.tooltip,
+            }
+          );
+        });
+
+        console.log(`绘制了 ${tvMarkers.length} 个告警标记`);
+      } catch (error) {
+        console.error('绘制标记失败:', error);
+      }
+    }
+
+    // 启动
+    init();
+  </script>
+</body>
+</html>

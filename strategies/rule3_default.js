@@ -2,6 +2,7 @@
 import fetch from "node-fetch";
 import logger from "../logger.js";
 import { getMarketStateMinuteLast5Min, getMarketStateMinuteLast1Hour } from "../db.js";
+import { computeWeightedMarketStateMA } from "../market_state_aggregator.js";
 import * as helpers from "../alerting/index.js";
 // 行为与内置版本一致：当聚合器计算的滚动成交额 sum >= 阈值 thresholdUsd 时：
 // - 若启用市值过滤(marketCapMaxUsd > 0)，要求市值在 (0, marketCapMaxUsd)
@@ -291,42 +292,44 @@ export default async function rule3Default(ctx, config, helpers) {
     : `${helpers.windowMinutes}m成交额超过$${(helpers.thresholdUsd/1_000_000).toFixed(2)}M`;
   const ratio = (typeof marketCap === 'number' && marketCap > 0) ? (sumTurnover / marketCap) : undefined;
 
-  // 从数据库查询最近5分钟的市场状态均值（由 market_state_cron.js 定时计算）
+  // 计算市值<5亿所有币种的MA5和MA60（相同权重）
   let marketStateRes = null;
   let marketState1h = null;
   try {
-    const avgState = getMarketStateMinuteLast5Min();
-    if (avgState) {
-      marketStateRes = {
-        price_score: avgState.price_score,
-        volume_score: avgState.volume_score,
-        state: avgState.state,
-        state_text: avgState.state,
-        sample_count: avgState.count,
-      };
-      logger.debug({ 
-        symbol, 
-        price_score: avgState.price_score.toFixed(2), 
-        volume_score: avgState.volume_score.toFixed(2),
-        sample_count: avgState.count 
-      }, '查询到5分钟市场状态均值');
+    // 构建实时价格 Map
+    const priceMap = new Map();
+    if (helpers && typeof helpers.getAllPrices === 'function') {
+      const prices = helpers.getAllPrices();
+      for (const [sym, price] of Object.entries(prices)) {
+        priceMap.set(sym, price);
+      }
     }
     
-    // 查询1小时均值
-    const avgState1h = getMarketStateMinuteLast1Hour();
-    if (avgState1h) {
-      marketState1h = {
-        price_score_1h: avgState1h.price_score,
-        sample_count_1h: avgState1h.count,
-      };
-      logger.debug({ 
-        symbol, 
-        price_score_1h: avgState1h.price_score.toFixed(2),
-        sample_count_1h: avgState1h.count 
-      }, '查询到1小时市场状态均值');
-    }
+    const marketStateMA = await computeWeightedMarketStateMA(500_000_000, priceMap);
+    
+    marketStateRes = {
+      price_score: marketStateMA.ma5.price_score,
+      volume_score: marketStateMA.ma5.volume_score,
+      state: null,
+      state_text: null,
+      sample_count: marketStateMA.ma5.symbols_count,
+    };
+    
+    marketState1h = {
+      price_score_1h: marketStateMA.ma60.price_score,
+      sample_count_1h: marketStateMA.ma60.symbols_count,
+    };
+    
+    logger.debug({ 
+      symbol, 
+      price_score_ma5: marketStateMA.ma5.price_score.toFixed(2), 
+      volume_score_ma5: marketStateMA.ma5.volume_score.toFixed(2),
+      symbols_count_ma5: marketStateMA.ma5.symbols_count,
+      price_score_ma60: marketStateMA.ma60.price_score.toFixed(2),
+      symbols_count_ma60: marketStateMA.ma60.symbols_count
+    }, '计算市场状态MA完成');
   } catch (e) {
-    logger.warn({ err: String(e) }, '查询市场状态失败，忽略');
+    logger.warn({ err: String(e), stack: e.stack }, '计算市场状态MA失败，忽略');
   }
 
   let halfBars = undefined;

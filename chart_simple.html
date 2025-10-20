@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Market State - 简化版</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+    }
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    h1 {
+      color: #333;
+      margin-bottom: 20px;
+      font-size: 24px;
+    }
+    .controls {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .controls button {
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: none;
+      margin-right: 10px;
+      font-size: 14px;
+      cursor: pointer;
+      background: #2196F3;
+      color: white;
+    }
+    .controls button:hover {
+      background: #1976D2;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+    .stat-card {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .stat-card h3 {
+      font-size: 14px;
+      color: #666;
+      margin-bottom: 8px;
+    }
+    .stat-card .value {
+      font-size: 28px;
+      font-weight: bold;
+      color: #333;
+    }
+    .stat-card .value.positive {
+      color: #4CAF50;
+    }
+    .stat-card .value.negative {
+      color: #F44336;
+    }
+    .chart-container {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    canvas {
+      width: 100% !important;
+      height: 300px !important;
+    }
+    .error {
+      background: #ffebee;
+      color: #c62828;
+      padding: 15px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      display: none;
+    }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    .data-table th,
+    .data-table td {
+      padding: 8px;
+      text-align: left;
+      border-bottom: 1px solid #ddd;
+    }
+    .data-table th {
+      background: #f5f5f5;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📊 Market State Monitor - 简化版</h1>
+    
+    <div class="controls">
+      <button onclick="loadData()">🔄 刷新数据</button>
+      <button onclick="toggleView()">📊 <span id="viewText">切换到表格视图</span></button>
+    </div>
+
+    <div id="error" class="error"></div>
+
+    <div class="stats">
+      <div class="stat-card">
+        <h3>当前价格得分</h3>
+        <div class="value" id="currentPrice">--</div>
+      </div>
+      <div class="stat-card">
+        <h3>当前成交量得分</h3>
+        <div class="value" id="currentVolume">--</div>
+      </div>
+      <div class="stat-card">
+        <h3>数据点数量</h3>
+        <div class="value" id="dataPoints">--</div>
+      </div>
+      <div class="stat-card">
+        <h3>最后更新</h3>
+        <div class="value" style="font-size: 16px;" id="lastUpdate">--</div>
+      </div>
+    </div>
+
+    <div id="chartView" class="chart-container">
+      <h2 style="margin-bottom: 15px; font-size: 18px;">Market Price Score</h2>
+      <canvas id="priceChart"></canvas>
+      
+      <h2 style="margin: 30px 0 15px 0; font-size: 18px;">Market Volume Score</h2>
+      <canvas id="volumeChart"></canvas>
+    </div>
+
+    <div id="tableView" class="chart-container" style="display: none;">
+      <h2 style="margin-bottom: 15px; font-size: 18px;">数据表格（最近50条）</h2>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>价格得分</th>
+            <th>成交量得分</th>
+          </tr>
+        </thead>
+        <tbody id="dataTableBody">
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script>
+    const SERVER_URL = 'http://localhost:8080';
+    let priceChart = null;
+    let volumeChart = null;
+    let currentData = null;
+
+    function showError(message) {
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = '❌ ' + message;
+      errorEl.style.display = 'block';
+      console.error('Error:', message);
+    }
+
+    function hideError() {
+      document.getElementById('error').style.display = 'none';
+    }
+
+    function initCharts() {
+      try {
+        console.log('初始化图表...');
+        
+        if (typeof Chart === 'undefined') {
+          throw new Error('Chart.js 未加载');
+        }
+
+        // 简单的线性图表，不使用时间轴
+        const priceCtx = document.getElementById('priceChart').getContext('2d');
+        priceChart = new Chart(priceCtx, {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: [{
+              label: 'Price Score',
+              data: [],
+              borderColor: 'rgb(33, 150, 243)',
+              backgroundColor: 'rgba(33, 150, 243, 0.1)',
+              borderWidth: 2,
+              fill: true,
+              tension: 0.4
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+              y: {
+                min: -100,
+                max: 100
+              }
+            },
+            plugins: {
+              legend: {
+                display: false
+              }
+            }
+          }
+        });
+
+        const volumeCtx = document.getElementById('volumeChart').getContext('2d');
+        volumeChart = new Chart(volumeCtx, {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: [{
+              label: 'Volume Score',
+              data: [],
+              borderColor: 'rgb(76, 175, 80)',
+              backgroundColor: 'rgba(76, 175, 80, 0.1)',
+              borderWidth: 2,
+              fill: true,
+              tension: 0.4
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+              y: {
+                min: 0,
+                max: 100
+              }
+            },
+            plugins: {
+              legend: {
+                display: false
+              }
+            }
+          }
+        });
+
+        console.log('✓ 图表初始化成功');
+        return true;
+      } catch (err) {
+        console.error('✗ 图表初始化失败:', err);
+        showError('图表初始化失败: ' + err.message);
+        return false;
+      }
+    }
+
+    async function loadData() {
+      try {
+        hideError();
+        console.log('加载数据...');
+        
+        const to = Math.floor(Date.now() / 1000);
+        const from = to - (24 * 3600); // 最近24小时
+
+        const priceUrl = `${SERVER_URL}/tradingview/history?symbol=MARKET_PRICE&resolution=5&from=${from}&to=${to}`;
+        const volumeUrl = `${SERVER_URL}/tradingview/history?symbol=MARKET_VOLUME&resolution=5&from=${from}&to=${to}`;
+
+        const [priceRes, volumeRes] = await Promise.all([
+          fetch(priceUrl),
+          fetch(volumeUrl)
+        ]);
+
+        const priceData = await priceRes.json();
+        const volumeData = await volumeRes.json();
+
+        console.log('Price data:', priceData);
+        console.log('Volume data:', volumeData);
+
+        if (priceData.s === 'ok' && volumeData.s === 'ok') {
+          currentData = { priceData, volumeData };
+          updateCharts(priceData, volumeData);
+          updateStats(priceData, volumeData);
+          updateTable(priceData, volumeData);
+        } else if (priceData.s === 'no_data') {
+          showError('暂无数据。请确保 market_state_cron.js 正在运行并已生成数据。');
+        } else {
+          showError('数据加载失败: ' + (priceData.errmsg || '未知错误'));
+        }
+      } catch (err) {
+        console.error('加载数据失败:', err);
+        showError('加载数据失败: ' + err.message);
+      }
+    }
+
+    function updateCharts(priceData, volumeData) {
+      if (!priceChart || !volumeChart) {
+        console.warn('图表未初始化，跳过更新');
+        return;
+      }
+
+      try {
+        // 生成时间标签
+        const labels = priceData.t.map(ts => {
+          const date = new Date(ts * 1000);
+          return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        });
+
+        // 更新 Price Chart
+        priceChart.data.labels = labels;
+        priceChart.data.datasets[0].data = priceData.c;
+        priceChart.update();
+
+        // 更新 Volume Chart
+        volumeChart.data.labels = labels;
+        volumeChart.data.datasets[0].data = volumeData.c;
+        volumeChart.update();
+
+        console.log('✓ 图表更新成功');
+      } catch (err) {
+        console.error('更新图表失败:', err);
+      }
+    }
+
+    function updateStats(priceData, volumeData) {
+      const currentPrice = priceData.c[priceData.c.length - 1];
+      const currentVolume = volumeData.c[volumeData.c.length - 1];
+      
+      const priceEl = document.getElementById('currentPrice');
+      priceEl.textContent = currentPrice.toFixed(2);
+      priceEl.className = 'value ' + (currentPrice > 0 ? 'positive' : currentPrice < 0 ? 'negative' : '');
+      
+      document.getElementById('currentVolume').textContent = currentVolume.toFixed(2);
+      document.getElementById('dataPoints').textContent = priceData.t.length;
+      
+      const lastTime = new Date(priceData.t[priceData.t.length - 1] * 1000);
+      document.getElementById('lastUpdate').textContent = lastTime.toLocaleString('zh-CN');
+    }
+
+    function updateTable(priceData, volumeData) {
+      const tbody = document.getElementById('dataTableBody');
+      tbody.innerHTML = '';
+      
+      const count = Math.min(50, priceData.t.length);
+      for (let i = priceData.t.length - count; i < priceData.t.length; i++) {
+        const row = tbody.insertRow();
+        const time = new Date(priceData.t[i] * 1000);
+        row.insertCell(0).textContent = time.toLocaleString('zh-CN');
+        row.insertCell(1).textContent = priceData.c[i].toFixed(2);
+        row.insertCell(2).textContent = volumeData.c[i].toFixed(2);
+      }
+    }
+
+    function toggleView() {
+      const chartView = document.getElementById('chartView');
+      const tableView = document.getElementById('tableView');
+      const viewText = document.getElementById('viewText');
+      
+      if (chartView.style.display === 'none') {
+        chartView.style.display = 'block';
+        tableView.style.display = 'none';
+        viewText.textContent = '切换到表格视图';
+      } else {
+        chartView.style.display = 'none';
+        tableView.style.display = 'block';
+        viewText.textContent = '切换到图表视图';
+      }
+    }
+
+    // 页面加载完成后初始化
+    window.addEventListener('load', () => {
+      console.log('页面加载完成');
+      
+      // 延迟初始化，确保 Chart.js 完全加载
+      setTimeout(() => {
+        if (initCharts()) {
+          loadData();
+        } else {
+          showError('图表初始化失败，但您仍可以切换到表格视图查看数据');
+        }
+      }, 100);
+    });
+  </script>
+</body>
+</html>

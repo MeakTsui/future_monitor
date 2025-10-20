@@ -118,6 +118,74 @@ export function getAllSuppliesMap() {
   return map;
 }
 
+/**
+ * 获取所有有流通供应量的币种（用于实时市值计算）
+ * @returns {Array<{symbol: string, circulating_supply: number}>}
+ */
+export function getAllSymbolsWithCirculatingSupply() {
+  const stmt = db.prepare(`
+    SELECT symbol, circulating_supply 
+    FROM supplies 
+    WHERE circulating_supply > 0
+    ORDER BY symbol
+  `);
+  return stmt.all();
+}
+
+/**
+ * 获取指定币种的最近N分钟的 state 数据
+ * @param {string} symbol - 币种符号
+ * @param {number} minutes - 分钟数（5 或 60）
+ * @returns {Array<{ts_minute, price_score, vol_score, symbol_score, weight}>}
+ */
+export function getSymbolStateMinutesHistory(symbol, minutes) {
+  const now = Date.now();
+  const startMs = now - minutes * 60 * 1000;
+  const stmt = db.prepare(`
+    SELECT ts_minute, price_score, vol_score, symbol_score, weight, latest_price
+    FROM market_state_symbol_minute 
+    WHERE symbol = ? AND ts_minute >= ?
+    ORDER BY ts_minute DESC
+    LIMIT ?
+  `);
+  return stmt.all(symbol, startMs, minutes);
+}
+
+/**
+ * 批量获取多个币种的最近N分钟的 state 数据
+ * @param {Array<string>} symbols - 币种符号数组
+ * @param {number} minutes - 分钟数（5 或 60）
+ * @returns {Map<string, Array>} symbol -> state数据数组
+ */
+export function getBatchSymbolStateMinutesHistory(symbols, minutes) {
+  if (!Array.isArray(symbols) || symbols.length === 0) return new Map();
+  
+  const now = Date.now();
+  const startMs = now - minutes * 60 * 1000;
+  
+  // 使用 IN 查询批量获取
+  const placeholders = symbols.map(() => '?').join(',');
+  const stmt = db.prepare(`
+    SELECT symbol, ts_minute, price_score, vol_score, symbol_score, weight, latest_price
+    FROM market_state_symbol_minute 
+    WHERE symbol IN (${placeholders}) AND ts_minute >= ?
+    ORDER BY symbol, ts_minute DESC
+  `);
+  
+  const rows = stmt.all(...symbols, startMs);
+  
+  // 按 symbol 分组
+  const result = new Map();
+  for (const row of rows) {
+    if (!result.has(row.symbol)) {
+      result.set(row.symbol, []);
+    }
+    result.get(row.symbol).push(row);
+  }
+  
+  return result;
+}
+
 // Alerts state API
 export function getAlertState(key) {
   const stmt = db.prepare('SELECT * FROM alerts_state WHERE key = ?');
@@ -267,6 +335,18 @@ export function getMarketStateDetails(ts_minute) {
   return db.prepare('SELECT * FROM market_state_symbol_minute WHERE ts_minute = ? ORDER BY symbol ASC').all(ts_minute);
 }
 
+/**
+ * 获取最近一次市场状态计算中的所有币种列表
+ * @returns {Array<string>} 币种符号数组
+ */
+export function getLatestMarketStateSymbols() {
+  const latestRow = db.prepare('SELECT MAX(ts_minute) as ts_minute FROM market_state_symbol_minute').get();
+  if (!latestRow || !latestRow.ts_minute) return [];
+  
+  const rows = db.prepare('SELECT DISTINCT symbol FROM market_state_symbol_minute WHERE ts_minute = ?').all(latestRow.ts_minute);
+  return rows.map(r => r.symbol);
+}
+
 // Daily universe APIs
 export function getUniverseByDate(date) {
   const row = db.prepare('SELECT * FROM universe_selection_daily WHERE date = ?').get(date);
@@ -370,6 +450,65 @@ export function calculateMovingAverage(windowMinutes, from, to) {
   }
   
   return result;
+}
+
+// 获取所有交易对列表（从 supplies 表）
+export function getAllSymbols() {
+  const stmt = db.prepare('SELECT symbol FROM supplies WHERE symbol LIKE "%USDT" ORDER BY symbol');
+  return stmt.all().map(row => row.symbol);
+}
+
+// 获取告警统计（按币种）
+export function getAlertsStatsBySymbol(hours = 24) {
+  const since = Date.now() - (hours * 3600 * 1000);
+  const stmt = db.prepare(`
+    SELECT 
+      SUBSTR(key, 1, INSTR(key, ':') - 1) as symbol,
+      COUNT(*) as total,
+      SUM(CASE WHEN key LIKE '%tier_bypass%' THEN 1 ELSE 0 END) as type2,
+      SUM(CASE WHEN key LIKE '%ws_rule3%' THEN 1 ELSE 0 END) as type1
+    FROM alerts_state
+    WHERE last_at >= ?
+    GROUP BY symbol
+  `);
+  
+  const rows = stmt.all(since);
+  const result = {};
+  rows.forEach(row => {
+    result[row.symbol] = {
+      total: row.total,
+      type1: row.type1,
+      type2: row.type2
+    };
+  });
+  return result;
+}
+
+// 获取单个币种的告警历史
+export function getSymbolAlerts(symbol, hours = 24) {
+  const since = Date.now() - (hours * 3600 * 1000);
+  const stmt = db.prepare(`
+    SELECT 
+      key,
+      last_at as timestamp,
+      last_kline_close as kline_close
+    FROM alerts_state
+    WHERE key LIKE ? AND last_at >= ?
+    ORDER BY last_at DESC
+  `);
+  
+  const rows = stmt.all(`${symbol}:%`, since);
+  return rows.map((row, index) => {
+    const isTier = row.key.includes('tier_bypass');
+    return {
+      id: `alert_${index}`,
+      symbol: symbol,
+      timestamp: row.timestamp,
+      kline_close: row.kline_close,
+      type: isTier ? '2' : '1',
+      reason: row.key
+    };
+  });
 }
 
 export default db;

@@ -1,6 +1,6 @@
 // 市场状态计算模块（独立于策略）
 import logger from "./logger.js";
-import { getLatestUniverseSnapshotBefore, getAvgVolMapForLatestHourBefore } from "./db.js";
+import { getLatestUniverseSnapshotBefore, getAvgVolMapForLatestHourBefore, getAllSymbolsWithCirculatingSupply } from "./db.js";
 
 function floorToHourUTCms(d) {
   const t = new Date(d);
@@ -77,25 +77,30 @@ function weightOf(sym) {
 }
 
 // 缓存
-let cachedUniverse = { ts_period: null, symbols: null };
+let cachedUniverse = { ts_hour: null, symbols: null, supplyMap: null };
 let cachedAvg = { ts_hour: null, map: null };
 
 /**
  * 实时计算市场状态
  * @param {number} tsMs - 时间戳（毫秒）
- * @param {object} readers - 数据读取器，需提供 getWindow(symbol) 方法
- * @param {object} options - 可选配置
+ * @param {object} readers - 数据读取器，需提供 getWindow(symbol) 方法和 getPrice(symbol) 方法
+ * @param {object} options - 可选配置 { maxMarketCapUsd: 500000000 }
  * @returns {object} { ts, price_score, volume_score, state, state_text, rows }
  */
 export async function computeMarketStateRealtime(tsMs, readers, options = {}) {
   const hourKey = floorToHourUTCms(new Date(tsMs));
-  const periodKey = floorTo12hUTCms(new Date(tsMs));
+  const maxMarketCapUsd = options.maxMarketCapUsd || 500_000_000; // 默认5亿美元
 
-  // 更新 universe 缓存
-  if (!cachedUniverse.symbols || cachedUniverse.ts_period !== periodKey) {
-    const snap = getLatestUniverseSnapshotBefore(tsMs);
-    const list = (snap && Array.isArray(snap.selected_51_130)) ? snap.selected_51_130 : [];
-    cachedUniverse = { ts_period: periodKey, symbols: ['ETHUSDT', 'SOLUSDT', ...list] };
+  // 更新 universe 缓存（每小时更新一次）
+  if (!cachedUniverse.symbols || cachedUniverse.ts_hour !== hourKey) {
+    // 获取所有有流通供应量的币种
+    const supplyRows = getAllSymbolsWithCirculatingSupply();
+    const supplyMap = new Map();
+    for (const row of supplyRows) {
+      supplyMap.set(row.symbol, row.circulating_supply);
+    }
+    cachedUniverse = { ts_hour: hourKey, symbols: null, supplyMap };
+    logger.info({ count: supplyRows.length }, '更新币种供应量缓存');
   }
 
   // 更新均量缓存
@@ -104,12 +109,53 @@ export async function computeMarketStateRealtime(tsMs, readers, options = {}) {
     cachedAvg = { ts_hour: ts_hour || hourKey, map: map || {} };
   }
 
-  const symbols = cachedUniverse.symbols || [];
   const avgMap = cachedAvg.map || {};
+  const supplyMap = cachedUniverse.supplyMap || new Map();
+  
+  // 第一步：计算所有币种的实时市值并筛选
+  const symbolsWithMarketCap = [];
+  for (const [baseSymbol, circulating] of supplyMap.entries()) {
+    const symbol = `${baseSymbol}USDT`;
+    
+    // 获取实时价格
+    let price = 0;
+    if (readers && typeof readers.getPrice === 'function') {
+      price = readers.getPrice(symbol) || 0;
+    }
+    
+    if (price > 0 && circulating > 0) {
+      const marketCap = price * circulating;
+      if (marketCap > 0 && marketCap < maxMarketCapUsd) {
+        symbolsWithMarketCap.push({ symbol, marketCap, circulating, price });
+      }
+    }
+  }
+  
+  // 按市值降序排序
+  symbolsWithMarketCap.sort((a, b) => b.marketCap - a.marketCap);
+  
+  // 限制最多500个币种
+  const maxSymbols = options.maxSymbols || 500;
+  const selectedSymbols = symbolsWithMarketCap.slice(0, maxSymbols);
+  
+  logger.debug({ 
+    total: symbolsWithMarketCap.length, 
+    selected: selectedSymbols.length,
+    maxCap: maxMarketCapUsd 
+  }, '筛选市值<5亿的币种');
+  
+  // 第二步：计算每个币种的得分
   const rows = [];
 
+  // 计算总市值（用于权重计算）
+  let totalMarketCap = 0;
+  for (const item of selectedSymbols) {
+    totalMarketCap += item.marketCap;
+  }
+  
   // 计算每个币种的得分
-  for (const sym of symbols) {
+  for (const item of selectedSymbols) {
+    const sym = item.symbol;
     const win = readers && typeof readers.getWindow === 'function' ? await readers.getWindow(sym) : null;
     if (!Array.isArray(win) || win.length === 0) continue;
     
@@ -125,7 +171,9 @@ export async function computeMarketStateRealtime(tsMs, readers, options = {}) {
     const price_score = scorePrice(latest, open5);
     const vol_score = scoreVolume(vol5, avg5m);
     const symbol_score = price_score + vol_score;
-    const weight = weightOf(sym);
+    
+    // 使用市值加权
+    const weight = totalMarketCap > 0 ? item.marketCap / totalMarketCap : 0;
     
     rows.push({
       symbol: sym,

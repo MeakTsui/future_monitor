@@ -201,6 +201,9 @@ class KlineAggregator {
     this.prevClosedPrice = new Map(); // symbol -> previous closed kline close
     // 策略插件：按需注册自定义策略，签名为 (ctx, config, helpers) => Promise<void> | void
     this.strategies = [];
+    // 市场状态计算相关
+    this.lastMarketStateCalcMs = 0;
+    this.marketStateCalcIntervalMs = 1000; // 每秒计算一次
   }
 
   start(config) {
@@ -263,8 +266,17 @@ class KlineAggregator {
           }
         }
         this._updateBucket(symbol, openTime, quoteVol,k, isClosed);
-        // compute rolling sum
+        
+        // 定期计算市场状态（每秒）
         const nowMs = Date.now();
+        if (nowMs - this.lastMarketStateCalcMs >= this.marketStateCalcIntervalMs) {
+          this.lastMarketStateCalcMs = nowMs;
+          this._calculateMarketState(nowMs, config).catch(e => {
+            logger.debug({ err: e.message }, '市场状态计算异常');
+          });
+        }
+        
+        // compute rolling sum
         const sum = this._sumLastMinutes(symbol, nowMs, this.windowMinutes);
         if (sum >= this.thresholdUsd) {
           const ctx = this._buildContextForStrategies({ symbol, openTime, sum, closePrice });
@@ -409,6 +421,13 @@ class KlineAggregator {
       markAlertSent,
       getSumLastMinutes: (symbol, minutes) => this._sumLastMinutes(symbol, Date.now(), minutes),
       getWindow: (symbol) => this._getWindow(symbol),
+      getAllPrices: () => {
+        const prices = {};
+        for (const [symbol, price] of this.lastClosePrice.entries()) {
+          prices[symbol] = price;
+        }
+        return prices;
+      },
       buildReasonLine: () => (this.marketCapMaxUsd > 0)
         ? `市值低于${formatCurrencyCompact(this.marketCapMaxUsd)}且${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`
         : `${this.windowMinutes}m成交额超过${formatCurrencyCompact(this.thresholdUsd)}`,
@@ -422,6 +441,73 @@ class KlineAggregator {
   // 对外：注册策略
   use(strategyFn) {
     if (typeof strategyFn === 'function') this.strategies.push(strategyFn);
+  }
+
+  // 市场状态计算（每秒计算并更新到数据库）
+  async _calculateMarketState(tsMs, config) {
+    try {
+      // 创建数据读取器适配器
+      const reader = {
+        getWindow: (symbol) => Promise.resolve(this._getWindow(symbol)),
+        getPrice: (symbol) => this.lastClosePrice.get(symbol) || 0
+      };
+      
+      // 调用计算模块
+      const { computeMarketStateRealtime } = await import('./market_state_calculator.js');
+      const ruleCfg = (config && config.rule3ws) || {};
+      const maxMarketCapUsd = typeof ruleCfg.marketCapMaxUsd === 'number' ? ruleCfg.marketCapMaxUsd : 500_000_000;
+      
+      const result = await computeMarketStateRealtime(tsMs, reader, { maxMarketCapUsd });
+      
+      if (!result) {
+        logger.debug('市场状态计算返回空结果');
+        return;
+      }
+      
+      const { ts, price_score, volume_score, state, state_text, rows } = result;
+      
+      // 每秒都更新到数据库（同一分钟桶内覆盖更新）
+      const ts_minute = Math.floor(ts / 60000) * 60000;
+      
+      const { upsertMarketStateMinute, upsertMarketStateSymbolMinute } = await import('./db.js');
+      
+      // 更新总体市场状态（UPSERT 会覆盖同一分钟的旧数据）
+      upsertMarketStateMinute({
+        ts_minute,
+        price_score,
+        volume_score,
+        state: state_text,
+        details_version: 2,
+      });
+      
+      // 更新详细数据（UPSERT 会覆盖同一分钟+同一symbol的旧数据）
+      if (Array.isArray(rows)) {
+        for (const row of rows) {
+          upsertMarketStateSymbolMinute({
+            ts_minute,
+            symbol: row.symbol,
+            price_score: row.price_score,
+            vol_score: row.vol_score,
+            symbol_score: row.symbol_score,
+            weight: row.weight,
+            latest_price: row.latest_price,
+            open_price_5m: row.open_price_5m,
+            vol_5m: row.vol_5m,
+            avg_vol_5m_5h: row.avg_vol_5m_5h,
+          });
+        }
+      }
+      
+      logger.debug({ 
+        ts_minute, 
+        price_score: price_score.toFixed(2), 
+        volume_score: volume_score.toFixed(2),
+        symbols_count: rows ? rows.length : 0 
+      }, '市场状态已更新到数据库');
+      
+    } catch (e) {
+      logger.error({ err: e.message, stack: e.stack }, '市场状态计算异常');
+    }
   }
 
   // 调试：返回指定 symbol 的当前计算与规则判定信息（只读，不会触发告警）
@@ -602,6 +688,12 @@ async function main() {
       if (typeof fn === 'function') {
         agg.use(fn);
         logger.info('已加载默认 WS 规则3策略插件');
+        // 立即执行一次市场状态计算
+        setTimeout(() => {
+          agg._calculateMarketState(Date.now(), { alerts: config.alerts, rule3ws: ruleCfg }).catch(e => {
+            logger.warn({ err: e.message }, '初始市场状态计算失败');
+          });
+        }, 5000); // 等待5秒让WS连接建立
       }
     } catch (e) {
       logger.warn({ err: e.message }, '加载默认 WS 规则3策略插件失败');
