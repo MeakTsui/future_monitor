@@ -96,9 +96,34 @@
       margin-bottom: 20px;
     }
     .chart-wrapper {
-      position: relative;
+      width: 100%;
       height: 400px;
-      margin-top: 10px;
+      position: relative;
+    }
+    .chart-tooltip {
+      position: absolute;
+      display: none;
+      padding: 8px 12px;
+      background: rgba(0, 0, 0, 0.85);
+      color: white;
+      border-radius: 6px;
+      font-size: 13px;
+      pointer-events: none;
+      z-index: 1000;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      white-space: nowrap;
+    }
+    .chart-tooltip .tooltip-time {
+      font-weight: 600;
+      margin-bottom: 4px;
+      color: #4fc3f7;
+    }
+    .chart-tooltip .tooltip-value {
+      margin: 2px 0;
+    }
+    .chart-tooltip .tooltip-label {
+      color: #aaa;
+      margin-right: 6px;
     }
     .error {
       background: #ffebee;
@@ -136,11 +161,6 @@
         <option value="15">15分钟</option>
         <option value="60">1小时</option>
       </select>
-      
-      <label>
-        <input type="checkbox" id="showRawData" onchange="loadData()">
-        显示原始数据
-      </label>
       
       <label>均线:</label>
       <select id="ma1" onchange="loadData()">
@@ -197,7 +217,9 @@
           📈 上涨趋势 | 📉 下跌趋势
         </span>
       </h2>
-      <div id="priceChart" class="chart-wrapper"></div>
+      <div id="priceChart" class="chart-wrapper">
+        <div id="priceTooltip" class="chart-tooltip"></div>
+      </div>
     </div>
 
     <div class="chart-container">
@@ -207,7 +229,9 @@
           🔥 成交活跃度
         </span>
       </h2>
-      <div id="volumeChart" class="chart-wrapper"></div>
+      <div id="volumeChart" class="chart-wrapper">
+        <div id="volumeTooltip" class="chart-tooltip"></div>
+      </div>
     </div>
 
     <div class="chart-container">
@@ -217,7 +241,9 @@
           📊 成交量均线比率 (MA1 / MA120)
         </span>
       </h2>
-      <div id="volumeScore2Chart" class="chart-wrapper"></div>
+      <div id="volumeScore2Chart" class="chart-wrapper">
+        <div id="volumeScore2Tooltip" class="chart-tooltip"></div>
+      </div>
     </div>
   </div>
 
@@ -244,6 +270,84 @@
 
     function hideError() {
       document.getElementById('error').style.display = 'none';
+    }
+
+    // 设置 Tooltip
+    function setupTooltip(chart, tooltipId, seriesName, mainSeries) {
+      const tooltip = document.getElementById(tooltipId);
+      const container = tooltip.parentElement;
+      
+      chart.subscribeCrosshairMove((param) => {
+        if (
+          param.point === undefined ||
+          !param.time ||
+          param.point.x < 0 ||
+          param.point.x > container.clientWidth ||
+          param.point.y < 0 ||
+          param.point.y > container.clientHeight
+        ) {
+          tooltip.style.display = 'none';
+          return;
+        }
+
+        const data = param.seriesData.get(mainSeries);
+        if (!data) {
+          tooltip.style.display = 'none';
+          return;
+        }
+
+        // 格式化时间
+        const date = new Date(param.time * 1000);
+        const timeStr = date.toLocaleString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false
+        });
+
+        // 格式化数值
+        const value = data.value !== undefined ? data.value.toFixed(4) : 'N/A';
+
+        // 构建 tooltip 内容
+        let html = `<div class="tooltip-time">${timeStr}</div>`;
+        html += `<div class="tooltip-value"><span class="tooltip-label">${seriesName}:</span><strong>${value}</strong></div>`;
+
+        // 如果有均线数据，也显示
+        const maSeriesKeys = Object.keys(seriesName === 'Price Score' ? priceMASeries : (seriesName === 'Volume Score' ? volumeMASeries : {}));
+        maSeriesKeys.forEach(window => {
+          const maSeries = seriesName === 'Price Score' ? priceMASeries[window] : volumeMASeries[window];
+          const maData = param.seriesData.get(maSeries);
+          if (maData && maData.value !== undefined) {
+            html += `<div class="tooltip-value"><span class="tooltip-label">MA${window}:</span><strong>${maData.value.toFixed(4)}</strong></div>`;
+          }
+        });
+
+        tooltip.innerHTML = html;
+        tooltip.style.display = 'block';
+
+        // 定位 tooltip
+        const tooltipWidth = tooltip.offsetWidth;
+        const tooltipHeight = tooltip.offsetHeight;
+        let left = param.point.x + 15;
+        let top = param.point.y - tooltipHeight / 2;
+
+        // 防止 tooltip 超出右边界
+        if (left + tooltipWidth > container.clientWidth) {
+          left = param.point.x - tooltipWidth - 15;
+        }
+
+        // 防止 tooltip 超出上下边界
+        if (top < 0) top = 0;
+        if (top + tooltipHeight > container.clientHeight) {
+          top = container.clientHeight - tooltipHeight;
+        }
+
+        tooltip.style.left = left + 'px';
+        tooltip.style.top = top + 'px';
+      });
     }
 
     // 初始化 TradingView 图表
@@ -377,6 +481,11 @@
           { time: Math.floor(Date.now() / 1000) + TIMEZONE_OFFSET, value: 1.0 }
         ]);
 
+        // 添加鼠标悬停事件监听
+        setupTooltip(priceChart, 'priceTooltip', 'Price Score', priceSeries);
+        setupTooltip(volumeChart, 'volumeTooltip', 'Volume Score', volumeSeries);
+        setupTooltip(volumeScore2Chart, 'volumeScore2Tooltip', 'Volume Score 2', volumeScore2Series);
+
         // 响应式调整
         window.addEventListener('resize', () => {
           priceChart.applyOptions({ width: priceContainer.clientWidth });
@@ -473,8 +582,6 @@
       }
 
       try {
-        const showRawData = document.getElementById('showRawData').checked;
-        
         // 转换为 TradingView 格式（加上东8区偏移）
         const priceChartData = priceData.t.map((time, i) => ({
           time: time + TIMEZONE_OFFSET,
@@ -492,15 +599,9 @@
           value: item.market_volume_score_2
         }));
 
-        // 更新主数据（根据复选框决定是否显示）
-        if (showRawData) {
-          priceSeries.setData(priceChartData);
-          volumeSeries.setData(volumeChartData);
-        } else {
-          // 清空原始数据
-          priceSeries.setData([]);
-          volumeSeries.setData([]);
-        }
+        // 更新主数据（始终显示）
+        priceSeries.setData(priceChartData);
+        volumeSeries.setData(volumeChartData);
 
         // 更新 Volume Score 2（始终显示）
         volumeScore2Series.setData(volumeScore2ChartData);
@@ -524,7 +625,7 @@
         volumeChart.timeScale().fitContent();
         volumeScore2Chart.timeScale().fitContent();
 
-        console.log('✓ 图表更新成功', { showRawData, volumeScore2Points: volumeScore2ChartData.length });
+        console.log('✓ 图表更新成功', { volumeScore2Points: volumeScore2ChartData.length });
       } catch (err) {
         console.error('更新图表失败:', err);
         showError('更新图表失败: ' + err.message);
