@@ -59,8 +59,8 @@
     }
   ],
   "volumeScore": {
-    "volume1": 5,
-    "volume2": 120,
+    "volume1": 10,
+    "volume2": 600,
     "updateIntervalMs": 60000,
     "distributeMs": 55000,
     "marketCalcIntervalMs": 5000,

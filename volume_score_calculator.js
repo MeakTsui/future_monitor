@@ -40,72 +40,187 @@ async function fetchAllTradingSymbols() {
   }
 }
 
-// 获取 5 分钟 K 线数据
-async function fetch5mKlines(symbol, limit) {
+// Binance 支持的 K 线周期（分钟数 -> interval 符号）
+const SUPPORTED_INTERVALS = [
+  { minutes: 1, symbol: '1m' },
+  { minutes: 3, symbol: '3m' },
+  { minutes: 5, symbol: '5m' },
+  { minutes: 15, symbol: '15m' },
+  { minutes: 30, symbol: '30m' },
+  { minutes: 60, symbol: '1h' },
+  { minutes: 120, symbol: '2h' },
+  { minutes: 240, symbol: '4h' },
+  { minutes: 360, symbol: '6h' },
+  { minutes: 480, symbol: '8h' },
+  { minutes: 720, symbol: '12h' },
+  { minutes: 1440, symbol: '1d' },
+  { minutes: 4320, symbol: '3d' },
+  { minutes: 10080, symbol: '1w' },
+  { minutes: 43200, symbol: '1M' },
+];
+
+// 根据分钟数自动选择最优的 K 线周期（减少 API 权重）
+// 优先选择能整除的最大周期
+function selectOptimalInterval(minutes) {
+  // 从大到小尝试，选择能整除的最大周期
+  const intervals = [
+    { minutes: 43200, symbol: '1M' },
+    { minutes: 10080, symbol: '1w' },
+    { minutes: 4320, symbol: '3d' },
+    { minutes: 1440, symbol: '1d' },
+    { minutes: 720, symbol: '12h' },
+    { minutes: 480, symbol: '8h' },
+    { minutes: 360, symbol: '6h' },
+    { minutes: 240, symbol: '4h' },
+    { minutes: 120, symbol: '2h' },
+    { minutes: 60, symbol: '1h' },
+    { minutes: 30, symbol: '30m' },
+    { minutes: 15, symbol: '15m' },
+    { minutes: 5, symbol: '5m' },
+    { minutes: 3, symbol: '3m' },
+    { minutes: 1, symbol: '1m' },
+  ];
+  
+  // 找到能整除的最大周期
+  for (const interval of intervals) {
+    if (minutes % interval.minutes === 0 && minutes >= interval.minutes) {
+      return {
+        interval: interval.symbol,
+        intervalMinutes: interval.minutes,
+        count: minutes / interval.minutes
+      };
+    }
+  }
+  
+  // 默认用 1 分钟
+  return { interval: '1m', intervalMinutes: 1, count: minutes };
+}
+
+// 通用 K 线获取函数
+async function fetchKlines(symbol, interval, limit) {
   try {
-    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=5m&limit=${limit}`;
+    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`;
     const resp = await fetch(url);
     if (!resp.ok) {
-      logger.warn({ symbol, status: resp.status }, '获取K线失败');
+      logger.warn({ symbol, interval, status: resp.status }, '获取K线失败');
       return null;
     }
     const data = await resp.json();
     if (!Array.isArray(data) || data.length === 0) {
-      logger.warn({ symbol, len: data?.length }, 'K线数据为空');
+      logger.warn({ symbol, interval, len: data?.length }, 'K线数据为空');
       return null;
     }
     return data;
   } catch (e) {
-    logger.error({ symbol, err: e.message }, '获取K线异常');
+    logger.error({ symbol, interval, err: e.message }, '获取K线异常');
     return null;
   }
 }
 
-// 计算移动平均（基于 5 分钟 K 线的成交量）
+// 计算平均成交量
 // klines: [[openTime, open, high, low, close, volume, closeTime, quoteVolume, ...], ...]
-// window: MA 窗口大小
-// 返回最近 window 根 K 线的平均成交量（quoteVolume，即 USDT 成交量）
-function calculateMA(klines, window) {
-  if (!Array.isArray(klines) || klines.length < window) return 0;
-  const slice = klines.slice(-window);
+// count: 使用的 K 线数量
+// 返回: 平均成交量（quoteVolume，即 USDT 成交量）
+function calculateAverageVolume(klines, count) {
+  if (!Array.isArray(klines) || klines.length < count) return 0;
+  const slice = klines.slice(0, count);  // 从最新的开始取
   let sum = 0;
   for (const k of slice) {
     const quoteVolume = parseFloat(k[7]); // k[7] 为报价资产成交量（USDT）
     if (Number.isFinite(quoteVolume)) sum += quoteVolume;
   }
-  return sum / window;
+  return sum / count;
+}
+
+// 获取单根 K 线的成交量
+// klines: [[openTime, open, high, low, close, volume, closeTime, quoteVolume, ...], ...]
+// 返回: 第一根（最新完成的）K 线的成交量
+function getSingleKlineVolume(klines) {
+  if (!Array.isArray(klines) || klines.length === 0) return 0;
+  const quoteVolume = parseFloat(klines[0][7]);
+  return Number.isFinite(quoteVolume) ? quoteVolume : 0;
 }
 
 // 单币种计算任务
+// volume1: 短期窗口（分钟），固定使用 1 分钟 K 线，计算 N 根 1 分钟 K 线的成交量总和
+// volume2: 长期窗口（分钟），自动选择最优 K 线周期，计算平均成交量
 async function calculateSymbolVolumeScore(symbol, tsMinute, config) {
   const volumeCfg = config.volumeScore || {};
-  const ma1Window = (typeof volumeCfg.volume1 === 'number' && volumeCfg.volume1 > 0) ? volumeCfg.volume1 : 5;
-  const ma2Window = (typeof volumeCfg.volume2 === 'number' && volumeCfg.volume2 > 0) ? volumeCfg.volume2 : 120;
-  const klineLimit = Math.max(ma1Window, ma2Window) + 10; // 多取一些以防数据不足
+  const volume1Minutes = (typeof volumeCfg.volume1 === 'number' && volumeCfg.volume1 > 0) ? volumeCfg.volume1 : 10;
+  const volume2Minutes = (typeof volumeCfg.volume2 === 'number' && volumeCfg.volume2 > 0) ? volumeCfg.volume2 : 600;
 
-  const klines = await fetch5mKlines(symbol, klineLimit);
-  if (!klines) return;
-
-  // 去掉最新的一根K线（未完成的K线）
-  const completedKlines = klines.slice(0, -1);
-  if (completedKlines.length < Math.max(ma1Window, ma2Window)) {
-    logger.debug({ symbol, availableKlines: completedKlines.length, required: Math.max(ma1Window, ma2Window) }, 'K线数据不足，跳过计算');
-    return;
+  try {
+    // ========== volume1: 固定使用 1 分钟 K 线 ==========
+    const limit1 = volume1Minutes + 1;  // +1 用于去掉最新未完成的
+    const klines1m = await fetchKlines(symbol, '1m', limit1);
+    if (!klines1m || klines1m.length < limit1) {
+      logger.debug({ symbol, interval: '1m', required: limit1, actual: klines1m?.length }, 'volume1 K线数据不足，跳过计算');
+      return;
+    }
+    
+    // 去掉最新一根（未完成）
+    const completed1m = klines1m.slice(0, -1);
+    if (completed1m.length < volume1Minutes) {
+      logger.debug({ symbol, availableKlines: completed1m.length, required: volume1Minutes }, 'volume1 K线数据不足，跳过计算');
+      return;
+    }
+    
+    // volume1: 计算 N 根 1 分钟 K 线的成交量总和
+    let volume1Sum = 0;
+    for (let i = 0; i < volume1Minutes; i++) {
+      const quoteVolume = parseFloat(completed1m[i][7]);
+      if (Number.isFinite(quoteVolume)) volume1Sum += quoteVolume;
+    }
+    const volumeMa1 = volume1Sum;
+    
+    // ========== volume2: 自动选择最优 K 线周期 ==========
+    const optimal = selectOptimalInterval(volume2Minutes);
+    const limit2 = optimal.count + 1;  // +1 用于去掉最新未完成的
+    
+    const klines2 = await fetchKlines(symbol, optimal.interval, limit2);
+    if (!klines2 || klines2.length < limit2) {
+      logger.debug({ symbol, interval: optimal.interval, required: limit2, actual: klines2?.length }, 'volume2 K线数据不足，跳过计算');
+      return;
+    }
+    
+    // 去掉最新一根（未完成）
+    const completed2 = klines2.slice(0, -1);
+    if (completed2.length < optimal.count) {
+      logger.debug({ symbol, availableKlines: completed2.length, required: optimal.count }, 'volume2 K线数据不足，跳过计算');
+      return;
+    }
+    
+    // volume2: 计算平均成交量
+    const volumeMa2Raw = calculateAverageVolume(completed2, optimal.count);
+    
+    // 换算到 volume1 的时间单位（重要！）
+    // volumeMa2Raw 是 optimal.intervalMinutes 分钟的平均成交量
+    // 需要换算到 volume1Minutes 分钟，才能与 volume1 比较
+    const volumeMa2 = volumeMa2Raw * volume1Minutes / optimal.intervalMinutes;
+    
+    // 计算得分
+    const volumeScore = volumeMa2 > 0 ? volumeMa1 / volumeMa2 : 0;
+    
+    // 保存到数据库
+    upsertSymbolVolumeScore({
+      ts_minute: tsMinute,
+      symbol,
+      volume_ma1: volumeMa1,
+      volume_ma2: volumeMa2,
+      volume_score: volumeScore,
+    });
+    
+    logger.debug({ 
+      symbol, 
+      volume1: { minutes: volume1Minutes, interval: '1m', klines: volume1Minutes },
+      volume2: { minutes: volume2Minutes, interval: optimal.interval, klines: optimal.count },
+      volumeMa1: volumeMa1.toFixed(2), 
+      volumeMa2: volumeMa2.toFixed(2), 
+      volumeScore: volumeScore.toFixed(4) 
+    }, '单币种 volume score 计算完成');
+  } catch (err) {
+    logger.error({ symbol, err: err.message }, '单币种 volume score 计算失败');
   }
-
-  const volumeMa1 = calculateMA(completedKlines, ma1Window);
-  const volumeMa2 = calculateMA(completedKlines, ma2Window);
-  const volumeScore = volumeMa2 > 0 ? volumeMa1 / volumeMa2 : 0;
-
-  upsertSymbolVolumeScore({
-    ts_minute: tsMinute,
-    symbol,
-    volume_ma1: volumeMa1,
-    volume_ma2: volumeMa2,
-    volume_score: volumeScore,
-  });
-
-  logger.debug({ symbol, volumeMa1: volumeMa1.toFixed(2), volumeMa2: volumeMa2.toFixed(2), volumeScore: volumeScore.toFixed(4) }, '单币种 volume score 计算完成');
 }
 
 // 均匀分布处理：将 symbols 在指定时间窗口内均匀分布更新
