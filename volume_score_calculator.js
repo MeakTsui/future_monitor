@@ -86,8 +86,15 @@ async function calculateSymbolVolumeScore(symbol, tsMinute, config) {
   const klines = await fetch5mKlines(symbol, klineLimit);
   if (!klines) return;
 
-  const volumeMa1 = calculateMA(klines, ma1Window);
-  const volumeMa2 = calculateMA(klines, ma2Window);
+  // 去掉最新的一根K线（未完成的K线）
+  const completedKlines = klines.slice(0, -1);
+  if (completedKlines.length < Math.max(ma1Window, ma2Window)) {
+    logger.debug({ symbol, availableKlines: completedKlines.length, required: Math.max(ma1Window, ma2Window) }, 'K线数据不足，跳过计算');
+    return;
+  }
+
+  const volumeMa1 = calculateMA(completedKlines, ma1Window);
+  const volumeMa2 = calculateMA(completedKlines, ma2Window);
   const volumeScore = volumeMa2 > 0 ? volumeMa1 / volumeMa2 : 0;
 
   upsertSymbolVolumeScore({
