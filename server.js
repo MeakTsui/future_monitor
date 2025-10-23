@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import logger from './logger.js';
-import { getLatestMarketState, getMarketStateHistory, getMarketStateDetails, calculateMovingAverage, getAllSymbols, getAlertsStatsBySymbol, getSymbolAlerts } from './db.js';
+import { getLatestMarketState, getMarketStateHistory, getMarketStateDetails, calculateMovingAverage, getAllSymbols, getAlertsStatsBySymbol, getSymbolAlerts, getLatestMarketVolumeScore, getMarketVolumeScoreHistory } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -238,6 +238,26 @@ const server = http.createServer(async (req, res) => {
       const rows = calculateMovingAverage(window, from, to);
       logger.info({ window, from, to, rows: rows.length }, 'MA 查询完成');
       return sendJson(res, 200, { data: rows, window });
+    }
+    
+    // Market Volume Score 2 接口
+    if (req.method === 'GET' && pathname === '/market/volume_score/latest') {
+      const row = getLatestMarketVolumeScore();
+      logger.info({ hit: row ? 1 : 0 }, 'volume_score latest 查询完成');
+      return sendJson(res, 200, { data: row });
+    }
+    
+    if (req.method === 'GET' && pathname === '/market/volume_score/history') {
+      const q = parseQuery(req.url);
+      const from = q.from !== undefined ? Number(q.from) : undefined;
+      const to = q.to !== undefined ? Number(q.to) : undefined;
+      const limit = q.limit ? Number(q.limit) : 1000;
+      if ((from !== undefined && !Number.isFinite(from)) || (to !== undefined && !Number.isFinite(to))) {
+        return sendJson(res, 400, { error: 'invalid_timestamp' });
+      }
+      const rows = getMarketVolumeScoreHistory(from, to, limit);
+      logger.info({ from, to, limit, rows: rows.length }, 'volume_score history 查询完成');
+      return sendJson(res, 200, { data: rows });
     }
     
     // ========== TradingView UDF 接口 ==========

@@ -82,6 +82,22 @@ CREATE TABLE IF NOT EXISTS sync_state (
    selected_51_130 TEXT,
    created_at TEXT
  );
+ CREATE TABLE IF NOT EXISTS symbol_volume_score (
+   symbol TEXT PRIMARY KEY,
+   ts_minute INTEGER,
+   volume_ma1 REAL,
+   volume_ma2 REAL,
+   volume_score REAL,
+   updated_at TEXT
+ );
+ CREATE TABLE IF NOT EXISTS market_volume_score_minute (
+   ts_minute INTEGER PRIMARY KEY,
+   total_volume_ma1 REAL,
+   total_volume_ma2 REAL,
+   market_volume_score_2 REAL,
+   symbols_count INTEGER,
+   created_at TEXT
+ );
 `);
 
 // Supplies API
@@ -509,6 +525,77 @@ export function getSymbolAlerts(symbol, hours = 24) {
       reason: row.key
     };
   });
+}
+
+// Symbol volume score APIs
+export function upsertSymbolVolumeScore({ ts_minute, symbol, volume_ma1, volume_ma2, volume_score }) {
+  const stmt = db.prepare(`INSERT INTO symbol_volume_score (
+    symbol, ts_minute, volume_ma1, volume_ma2, volume_score, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?)
+  ON CONFLICT(symbol) DO UPDATE SET
+    ts_minute=excluded.ts_minute,
+    volume_ma1=excluded.volume_ma1,
+    volume_ma2=excluded.volume_ma2,
+    volume_score=excluded.volume_score,
+    updated_at=excluded.updated_at`);
+  stmt.run(symbol, ts_minute, volume_ma1, volume_ma2, volume_score, new Date().toISOString());
+}
+
+export function getLatestSymbolVolumeScore(symbol) {
+  const stmt = db.prepare('SELECT * FROM symbol_volume_score WHERE symbol = ?');
+  return stmt.get(symbol);
+}
+
+export function getLatestSymbolVolumeScores(symbols) {
+  if (!Array.isArray(symbols) || symbols.length === 0) return [];
+  const placeholders = symbols.map(() => '?').join(',');
+  const stmt = db.prepare(`
+    SELECT * FROM symbol_volume_score 
+    WHERE symbol IN (${placeholders})
+  `);
+  return stmt.all(...symbols);
+}
+
+export function getSymbolsWithMarketCapLessThan(maxMarketCap) {
+  const stmt = db.prepare(`
+    SELECT symbol FROM supplies 
+    WHERE market_cap > 0 AND market_cap < ?
+    ORDER BY symbol
+    LIMIT 500
+  `);
+  // 将基础资产符号转换为 USDT 永续合约符号
+  // 例如：BTC -> BTCUSDT
+  return stmt.all(maxMarketCap).map(row => row.symbol + 'USDT');
+}
+
+// Market volume score APIs
+export function upsertMarketVolumeScore({ ts_minute, total_volume_ma1, total_volume_ma2, market_volume_score_2, symbols_count }) {
+  const stmt = db.prepare(`INSERT INTO market_volume_score_minute (
+    ts_minute, total_volume_ma1, total_volume_ma2, market_volume_score_2, symbols_count, created_at
+  ) VALUES (?, ?, ?, ?, ?, ?)
+  ON CONFLICT(ts_minute) DO UPDATE SET
+    total_volume_ma1=excluded.total_volume_ma1,
+    total_volume_ma2=excluded.total_volume_ma2,
+    market_volume_score_2=excluded.market_volume_score_2,
+    symbols_count=excluded.symbols_count`);
+  stmt.run(ts_minute, total_volume_ma1, total_volume_ma2, market_volume_score_2, symbols_count, new Date().toISOString());
+}
+
+export function getLatestMarketVolumeScore() {
+  const stmt = db.prepare('SELECT * FROM market_volume_score_minute ORDER BY ts_minute DESC LIMIT 1');
+  return stmt.get();
+}
+
+export function getMarketVolumeScoreHistory(from, to, limit = 1000) {
+  if (from && to) {
+    return db.prepare('SELECT * FROM market_volume_score_minute WHERE ts_minute >= ? AND ts_minute <= ? ORDER BY ts_minute ASC LIMIT ?')
+      .all(from, to, limit);
+  }
+  if (from) {
+    return db.prepare('SELECT * FROM market_volume_score_minute WHERE ts_minute >= ? ORDER BY ts_minute ASC LIMIT ?')
+      .all(from, limit);
+  }
+  return db.prepare('SELECT * FROM market_volume_score_minute ORDER BY ts_minute ASC LIMIT ?').all(limit);
 }
 
 export default db;

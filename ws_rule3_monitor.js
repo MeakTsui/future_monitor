@@ -119,12 +119,15 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
   // merge extra metrics if provided by strategies (e.g. market state)
   try {
     if (payload && payload.metrics && extras) {
-      // 新版字段：market_price_score, market_volume_score
+      // 新版字段：market_price_score, market_volume_score, market_volume_score_2
       if (typeof extras.market_price_score === 'number' && Number.isFinite(extras.market_price_score)) {
         payload.metrics.market_price_score = extras.market_price_score;
       }
       if (typeof extras.market_volume_score === 'number' && Number.isFinite(extras.market_volume_score)) {
         payload.metrics.market_volume_score = extras.market_volume_score;
+      }
+      if (typeof extras.market_volume_score_2 === 'number' && Number.isFinite(extras.market_volume_score_2)) {
+        payload.metrics.market_volume_score_2 = extras.market_volume_score_2;
       }
       if (extras.market_state_text) {
         payload.metrics.market_state_text = extras.market_state_text;

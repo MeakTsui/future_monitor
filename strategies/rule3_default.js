@@ -1,7 +1,7 @@
 // 默认 Rule3 WS 策略（插件化）
 import fetch from "node-fetch";
 import logger from "../logger.js";
-import { getMarketStateMinuteLast5Min, getMarketStateMinuteLast1Hour } from "../db.js";
+import { getMarketStateMinuteLast5Min, getMarketStateMinuteLast1Hour, getLatestMarketVolumeScore } from "../db.js";
 import { computeWeightedMarketStateMA } from "../market_state_aggregator.js";
 import * as helpers from "../alerting/index.js";
 // 行为与内置版本一致：当聚合器计算的滚动成交额 sum >= 阈值 thresholdUsd 时：
@@ -366,6 +366,17 @@ export default async function rule3Default(ctx, config, helpers) {
     }
   } catch {}
 
+  // 查询最新的市场 volume score 2
+  let marketVolumeScore2 = null;
+  try {
+    const mvs = getLatestMarketVolumeScore();
+    if (mvs && typeof mvs.market_volume_score_2 === 'number') {
+      marketVolumeScore2 = Number(mvs.market_volume_score_2.toFixed(4));
+    }
+  } catch (e) {
+    logger.warn({ err: String(e) }, '获取市场 volume score 2 失败');
+  }
+
   let text = buildStrategyText(ctx, reasonLine, helpers);
   try {
     const extra = [];
@@ -384,6 +395,7 @@ export default async function rule3Default(ctx, config, helpers) {
     deltaPct,
     market_price_score: (marketStateRes && typeof marketStateRes.price_score === 'number') ? Number(marketStateRes.price_score.toFixed(2)) : undefined,
     market_volume_score: (marketStateRes && typeof marketStateRes.volume_score === 'number') ? Number(marketStateRes.volume_score.toFixed(2)) : undefined,
+    market_volume_score_2: marketVolumeScore2,
     market_state_text: marketStateRes ? marketStateRes.state_text : undefined,
     market_state: marketStateRes ? marketStateRes.state : undefined,
     market_price_score_1h: (marketState1h && typeof marketState1h.price_score_1h === 'number') ? Number(marketState1h.price_score_1h.toFixed(2)) : undefined,

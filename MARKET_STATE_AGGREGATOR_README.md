@@ -93,12 +93,12 @@ const result = await computeWeightedMarketStateMA(
 {
   ma5: {
     price_score: 12.34,      // 5分钟价格得分均值（范围 -100 ~ 100）
-    volume_score: 45.67,     // 5分钟成交量得分均值（范围 0 ~ 100）
+    volume_score: 2.15,      // 5分钟成交量得分均值（成交量倍数，范围 0 ~ ∞，实际 0.5 ~ 5）
     symbols_count: 180       // 参与计算的币种数量
   },
   ma60: {
     price_score: 10.23,      // 60分钟价格得分均值（范围 -100 ~ 100）
-    volume_score: 40.12,     // 60分钟成交量得分均值（范围 0 ~ 100）
+    volume_score: 1.85,      // 60分钟成交量得分均值（成交量倍数，范围 0 ~ ∞，实际 0.5 ~ 5）
     symbols_count: 175       // 参与计算的币种数量
   }
 }
@@ -156,9 +156,9 @@ const marketState1h = {
 6. 相同权重合并所有币种的 MA
    Total MA = (sum of all symbol MA) / symbol_count
    ↓
-7. 将结果乘以100（保持与旧逻辑一致）
+7. 将 price_score 乘以100，volume_score 保持原值
    price_score: -1~1 → -100~100
-   volume_score: 0~1 → 0~100
+   volume_score: 保持成交量倍数（0~∞）
    ↓
 8. 返回结果并缓存（1秒）
 ```

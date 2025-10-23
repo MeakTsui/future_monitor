@@ -1,7 +1,7 @@
 // Rule3 策略：基于市值区间与5分钟成交额的档位匹配，绕过均量检查
 // 配置示例：config.rule3ws.tierBypassStrategy = { tiers: [...], enableMarketState: true }
 import logger from "../logger.js";
-import { getMarketStateMinuteLast5Min, getMarketStateMinuteLast1Hour } from "../db.js";
+import { getMarketStateMinuteLast5Min, getMarketStateMinuteLast1Hour, getLatestMarketVolumeScore } from "../db.js";
 import { computeWeightedMarketStateMA } from "../market_state_aggregator.js";
 
 const lastBucketSent = new Map(); // symbol -> last openTime
@@ -238,6 +238,17 @@ export default async function rule3TierBypass(ctx, config, helpers) {
     }
   } catch {}
 
+  // 查询最新的市场 volume score 2
+  let marketVolumeScore2 = null;
+  try {
+    const mvs = getLatestMarketVolumeScore();
+    if (mvs && typeof mvs.market_volume_score_2 === 'number') {
+      marketVolumeScore2 = Number(mvs.market_volume_score_2.toFixed(4));
+    }
+  } catch (e) {
+    logger.warn({ err: String(e) }, 'tier_bypass策略：获取市场 volume score 2 失败');
+  }
+
   // 构建文本（使用 effectiveMarketCap 覆盖 ctx.marketCap）
   const ctxWithEffectiveMc = { ...ctx, marketCap: effectiveMarketCap };
   const tierInfo = { matched: true, tierIndex: matchedTierIndex, vol5m, usingDefaultMarketCap };
@@ -260,6 +271,7 @@ export default async function rule3TierBypass(ctx, config, helpers) {
     deltaPct,
     market_price_score: (marketStateRes && typeof marketStateRes.price_score === 'number') ? Number(marketStateRes.price_score.toFixed(2)) : undefined,
     market_volume_score: (marketStateRes && typeof marketStateRes.volume_score === 'number') ? Number(marketStateRes.volume_score.toFixed(2)) : undefined,
+    market_volume_score_2: marketVolumeScore2,
     market_state_text: marketStateRes ? marketStateRes.state_text : undefined,
     market_state: marketStateRes ? marketStateRes.state : undefined,
     market_price_score_1h: (marketState1h && typeof marketState1h.price_score_1h === 'number') ? Number(marketState1h.price_score_1h.toFixed(2)) : undefined,

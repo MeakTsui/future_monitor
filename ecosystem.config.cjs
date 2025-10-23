@@ -69,6 +69,17 @@ module.exports = {
       env: {
         LOG_LEVEL: process.env.LOG_LEVEL || 'info'
       }
+    },
+    {
+      name: 'volume-score-calc',
+      script: 'volume_score_calculator.js',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      env: {
+        LOG_LEVEL: process.env.LOG_LEVEL || 'info'
+      }
     }
   ]
 };

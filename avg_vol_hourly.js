@@ -1,6 +1,6 @@
 import logger from './logger.js';
 import { fetchKlines1m, batchSequential, sleep } from './binance_futures.js';
-import { getLatestUniverseSnapshotBefore, upsertAvgVolHourly } from './db.js';
+import { getAllSymbolsWithCirculatingSupply, upsertAvgVolHourly } from './db.js';
 
 function floorToHourUTCms(d = new Date()) {
   const t = new Date(d);
@@ -25,9 +25,11 @@ function sumVolumes(klines) {
 }
 
 async function computeAndSave(tsHour) {
-  const snap = getLatestUniverseSnapshotBefore(tsHour);
-  const symbols = ['ETHUSDT', 'SOLUSDT', ...(snap.selected_51_130 || [])];
-  logger.info({ tsHour, symbols: symbols.length }, '开始计算每小时 avg_vol_5m_5h');
+  // 获取所有有流通供应量的币种
+  const allSymbols = getAllSymbolsWithCirculatingSupply();
+  const symbols = allSymbols.map(s => `${s.symbol}USDT`);
+  
+  logger.info({ tsHour, symbols: symbols.length }, '开始计算每小时 avg_vol_5m_5h（所有币种）');
 
   await batchSequential(symbols, async (sym) => {
     try {

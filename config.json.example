@@ -57,5 +57,13 @@
       "provider": "webhook",
       "url": "http://localhost:9000/webhook"
     }
-  ]
+  ],
+  "volumeScore": {
+    "volume1": 5,
+    "volume2": 120,
+    "updateIntervalMs": 60000,
+    "distributeMs": 55000,
+    "marketCalcIntervalMs": 5000,
+    "marketCapThreshold": 500000000
+  }
 }
