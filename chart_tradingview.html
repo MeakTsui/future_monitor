@@ -298,7 +298,8 @@
 
         // 格式化时间
         const date = new Date(param.time * 1000);
-        const timeStr = date.toLocaleString('zh-CN', {
+        const timeStr = date.toLocaleString('zh-CN',{
+          timeZone: 'UTC',
           year: 'numeric',
           month: '2-digit',
           day: '2-digit',

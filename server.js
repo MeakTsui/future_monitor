@@ -251,7 +251,7 @@ const server = http.createServer(async (req, res) => {
       const q = parseQuery(req.url);
       const from = q.from !== undefined ? Number(q.from) : undefined;
       const to = q.to !== undefined ? Number(q.to) : undefined;
-      const limit = q.limit ? Number(q.limit) : 1000;
+      const limit = q.limit ? Number(q.limit) : 0;
       if ((from !== undefined && !Number.isFinite(from)) || (to !== undefined && !Number.isFinite(to))) {
         return sendJson(res, 400, { error: 'invalid_timestamp' });
       }

@@ -586,16 +586,25 @@ export function getLatestMarketVolumeScore() {
   return stmt.get();
 }
 
-export function getMarketVolumeScoreHistory(from, to, limit = 1000) {
-  if (from && to) {
-    return db.prepare('SELECT * FROM market_volume_score_minute WHERE ts_minute >= ? AND ts_minute <= ? ORDER BY ts_minute ASC LIMIT ?')
-      .all(from, to, limit);
+export function getMarketVolumeScoreHistory(from, to, limit) {
+  let stmt = 'SELECT * FROM market_volume_score_minute WHERE 1=1'
+  let params = []
+
+  if (to) {
+    stmt += ' and ts_minute <= ?'
+    params.push(to)
   }
   if (from) {
-    return db.prepare('SELECT * FROM market_volume_score_minute WHERE ts_minute >= ? ORDER BY ts_minute ASC LIMIT ?')
-      .all(from, limit);
+    stmt += ' and ts_minute >= ?'
+    params.push(from)
   }
-  return db.prepare('SELECT * FROM market_volume_score_minute ORDER BY ts_minute ASC LIMIT ?').all(limit);
+  stmt += ' ORDER BY ts_minute ASC'
+  if (limit > 0) {
+    stmt += ' limit ?'
+    params.push(limit)
+  }
+
+  return db.prepare(stmt).all(params);
 }
 
 export default db;
