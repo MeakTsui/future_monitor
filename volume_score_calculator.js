@@ -198,8 +198,9 @@ async function calculateSymbolVolumeScore(symbol, tsMinute, config) {
     // 需要换算到 volume1Minutes 分钟，才能与 volume1 比较
     const volumeMa2 = volumeMa2Raw * volume1Minutes / optimal.intervalMinutes;
     
-    // 计算得分
-    const volumeScore = volumeMa2 > 0 ? volumeMa1 / volumeMa2 : 0;
+    // 计算得分（上限 5 分）
+    const volumeScoreRaw = volumeMa2 > 0 ? volumeMa1 / volumeMa2 : 0;
+    const volumeScore = Math.min(volumeScoreRaw, 5);
     
     // 保存到数据库
     upsertSymbolVolumeScore({
@@ -324,15 +325,17 @@ async function runMarketVolumeScoreLoop() {
       return;
     }
 
-    // 计算总和
+    // 计算平均值
+    let totalVolumeScore = 0;
     let totalVolumeMa1 = 0;
     let totalVolumeMa2 = 0;
     for (const row of scores) {
+      totalVolumeScore += row.volume_score || 0;
       totalVolumeMa1 += row.volume_ma1 || 0;
       totalVolumeMa2 += row.volume_ma2 || 0;
     }
 
-    const marketVolumeScore2 = totalVolumeMa2 > 0 ? totalVolumeMa1 / totalVolumeMa2 : 0;
+    const marketVolumeScore2 = scores.length > 0 ? totalVolumeScore / scores.length : 0;
 
     // 保存到数据库（按分钟去重）
     upsertMarketVolumeScore({
