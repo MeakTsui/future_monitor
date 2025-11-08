@@ -184,17 +184,42 @@ export class KlineIntegrityChecker {
       return -1; // -1 表示跳过（数据完整）
     }
 
+    // 过滤掉边界数据（在保留时间边界附近 2 分钟内的数据）
+    // 这些数据即将被清理，不值得修复
+    const boundaryThreshold = 120000; // 2 分钟
+    const retentionMs = this.retentionHours * 3600 * 1000;
+    const filteredMissing = missingMinutes.filter(ts => {
+      const ageMs = now - ts;
+      return Math.abs(ageMs - retentionMs) >= boundaryThreshold;
+    });
+
+    // 记录过滤掉的边界数据
+    const boundaryCount = missingMinutes.length - filteredMissing.length;
+    if (boundaryCount > 0) {
+      logger.debug({ 
+        symbol, 
+        totalMissing: missingMinutes.length, 
+        boundaryFiltered: boundaryCount,
+        remaining: filteredMissing.length 
+      }, '过滤掉边界数据');
+    }
+
+    if (filteredMissing.length === 0) {
+      logger.debug({ symbol }, 'K 线数据完整（排除边界数据），无需修复');
+      return -1; // -1 表示跳过（数据完整）
+    }
+
     // 如果缺失数据过多（超过 50%），可能是新交易对或 Redis 刚启动，批量拉取
     const totalMinutes = (toTs - fromTs) / 60000;
-    const missingRatio = missingMinutes.length / totalMinutes;
+    const missingRatio = filteredMissing.length / totalMinutes;
 
     if (missingRatio > 0.5) {
-      logger.info({ symbol, missing: missingMinutes.length, total: totalMinutes, ratio: missingRatio.toFixed(2) }, 
+      logger.info({ symbol, missing: filteredMissing.length, total: totalMinutes, ratio: missingRatio.toFixed(2) }, 
         'K 线数据缺失较多，批量拉取');
       return await this._repairBatch(symbol, fromTs, toTs);
     } else {
-      logger.info({ symbol, missing: missingMinutes.length }, 'K 线数据有缺失，逐个修复');
-      return await this._repairMissing(symbol, missingMinutes);
+      logger.info({ symbol, missing: filteredMissing.length }, 'K 线数据有缺失，逐个修复');
+      return await this._repairMissing(symbol, filteredMissing);
     }
   }
 
