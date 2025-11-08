@@ -16,6 +16,7 @@ export class KlineIntegrityChecker {
     this.timer = null;
     this.lastCheckTime = new Map(); // symbol -> lastCheckTs
     this.failedTimestamps = new Map(); // symbol -> Set<timestamp> 记录无法修复的时间戳
+    this.invalidSymbols = new Set(); // 记录无效的交易对（已下架、暂停等）
   }
 
   /**
@@ -144,10 +145,20 @@ export class KlineIntegrityChecker {
     }
 
     const duration = Date.now() - startTime;
+    
+    // 记录无效交易对信息
+    if (this.invalidSymbols.size > 0) {
+      logger.warn({ 
+        count: this.invalidSymbols.size,
+        symbols: Array.from(this.invalidSymbols).slice(0, 10) // 只显示前 10 个
+      }, '发现无效交易对（已下架或暂停）');
+    }
+    
     logger.info({ 
       checkedCount, 
       repairedCount, 
       skippedCount,
+      invalidCount: this.invalidSymbols.size,
       errorCount, 
       durationMs: duration,
       durationMinutes: (duration / 60000).toFixed(2)
@@ -162,6 +173,12 @@ export class KlineIntegrityChecker {
   async checkAndRepairSymbol(symbol) {
     if (!isRedisConnected()) {
       return 0;
+    }
+
+    // 跳过已知的无效交易对
+    if (this.invalidSymbols.has(symbol)) {
+      logger.debug({ symbol }, '跳过无效交易对');
+      return -1; // -1 表示跳过
     }
 
     // 检查时间范围：最近 12 小时，但不包括当前正在进行的分钟
@@ -257,6 +274,13 @@ export class KlineIntegrityChecker {
       logger.info({ symbol, count: klines.length }, 'K 线数据批量修复完成');
       return klines.length;
     } catch (err) {
+      // 检查是否是无效交易对错误
+      if (this._isInvalidSymbolError(err)) {
+        logger.warn({ symbol, err: err.message }, '交易对无效，标记为跳过');
+        this.invalidSymbols.add(symbol);
+        return -1; // -1 表示跳过
+      }
+      
       logger.error({ symbol, fromTs, toTs, err: err.message }, '批量修复失败');
       return 0;
     }
@@ -351,6 +375,13 @@ export class KlineIntegrityChecker {
         // 避免请求过快
         await new Promise(resolve => setTimeout(resolve, 200));
       } catch (err) {
+        // 检查是否是无效交易对错误
+        if (this._isInvalidSymbolError(err)) {
+          logger.warn({ symbol, err: err.message }, '交易对无效，标记为跳过');
+          this.invalidSymbols.add(symbol);
+          return -1; // -1 表示跳过，不再继续修复其他区间
+        }
+        
         logger.warn({ symbol, start, end, err: err.message }, '修复区间失败');
       }
     }
@@ -403,6 +434,26 @@ export class KlineIntegrityChecker {
    */
   _alignToMinute(ts) {
     return Math.floor(ts / 60000) * 60000;
+  }
+
+  /**
+   * 判断是否是无效交易对错误
+   * @param {Error} err - 错误对象
+   * @returns {boolean} 是否是无效交易对错误
+   */
+  _isInvalidSymbolError(err) {
+    if (!err || !err.message) {
+      return false;
+    }
+    
+    const message = err.message.toLowerCase();
+    
+    // Binance API 错误码
+    // -1122: Invalid symbol status (交易对状态无效，已下架或暂停)
+    // -1121: Invalid symbol (交易对不存在)
+    return message.includes('-1122') || 
+           message.includes('-1121') ||
+           message.includes('invalid symbol');
   }
 
   /**
