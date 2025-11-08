@@ -84,7 +84,8 @@ async function main() {
   const integrityConfig = {
     checkIntervalMinutes: config.klineCache.checkIntervalMinutes || 5,
     retentionHours: config.klineCache.retentionHours || 12,
-    restBaseUrl: config.klineCache.restApiBaseUrl || 'https://fapi.binance.com'
+    restBaseUrl: config.klineCache.restApiBaseUrl || 'https://fapi.binance.com',
+    refreshRecentMinutes: config.klineCache.refreshRecentMinutes,
   };
 
   logger.info({
