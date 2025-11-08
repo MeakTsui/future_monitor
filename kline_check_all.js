@@ -150,6 +150,8 @@ async function checkAllSymbols(options, config) {
         if (options.verbose || missingCount <= 10) {
           console.log(`   缺失的数据:`);
           const displayCount = Math.min(missingCount, 10);
+          const boundaryThreshold = 120000; // 2 分钟
+          
           for (let i = 0; i < displayCount; i++) {
             const ts = missingMinutes[i];
             const date = new Date(ts);
@@ -163,10 +165,27 @@ async function checkAllSymbols(options, config) {
               second: '2-digit',
               hour12: false
             });
-            console.log(`     [${i + 1}] ${ts} → ${localTime}`);
+            
+            // 检查是否在边界上
+            const ageMs = checkTime - ts;
+            const retentionMs = integrityConfig.retentionHours * 3600 * 1000;
+            const isBoundary = Math.abs(ageMs - retentionMs) < boundaryThreshold;
+            const boundaryNote = isBoundary ? ' [边界数据]' : '';
+            
+            console.log(`     [${i + 1}] ${ts} → ${localTime}${boundaryNote}`);
           }
           if (missingCount > 10) {
             console.log(`     ... 还有 ${missingCount - 10} 条缺失数据`);
+          }
+          
+          // 如果有边界数据，添加说明
+          const hasBoundary = missingMinutes.some(ts => {
+            const ageMs = checkTime - ts;
+            const retentionMs = integrityConfig.retentionHours * 3600 * 1000;
+            return Math.abs(ageMs - retentionMs) < boundaryThreshold;
+          });
+          if (hasBoundary) {
+            console.log(`   💡 [边界数据] 表示该数据在保留时间（${integrityConfig.retentionHours}小时）的边界上，可能即将被清理`);
           }
         }
 
