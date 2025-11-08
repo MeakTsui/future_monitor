@@ -49,7 +49,7 @@ K 线数据完整性检查工具
 选项:
   --repair, -r              检查并自动修复缺失的数据
   --symbol SYMBOL, -s       只检查指定的交易对
-  --verbose, -v             显示详细信息
+  --verbose, -v             显示详细信息（包括缺失的时间戳）
   --help, -h                显示帮助信息
 
 示例:
@@ -59,11 +59,16 @@ K 线数据完整性检查工具
   # 检查并修复所有交易对
   node kline_check_all.js --repair
 
-  # 检查单个交易对
-  node kline_check_all.js --symbol BTCUSDT
+  # 检查单个交易对，显示详细信息
+  node kline_check_all.js --symbol BTCUSDT --verbose
 
   # 检查并修复单个交易对
   node kline_check_all.js --symbol BTCUSDT --repair
+
+输出说明:
+  - 缺失 ≤ 10 条: 自动显示所有缺失的时间戳
+  - 缺失 > 10 条: 显示前 10 个时间戳
+  - --verbose 模式: 在汇总中也显示时间戳详情
       `);
       process.exit(0);
     }
@@ -141,11 +146,36 @@ async function checkAllSymbols(options, config) {
         results.missing++;
         console.log(`${progress} ⚠️  ${symbol}: 缺失 ${missingCount} 条 (${missingRatio}%)`);
 
+        // 显示缺失的具体时间戳（最多显示前 10 个）
+        if (options.verbose || missingCount <= 10) {
+          console.log(`   缺失的数据:`);
+          const displayCount = Math.min(missingCount, 10);
+          for (let i = 0; i < displayCount; i++) {
+            const ts = missingMinutes[i];
+            const date = new Date(ts);
+            const localTime = date.toLocaleString('zh-CN', { 
+              timeZone: 'Asia/Shanghai',
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: false
+            });
+            console.log(`     [${i + 1}] ${ts} → ${localTime}`);
+          }
+          if (missingCount > 10) {
+            console.log(`     ... 还有 ${missingCount - 10} 条缺失数据`);
+          }
+        }
+
         const detail = {
           symbol,
           totalMinutes,
           missingCount,
           missingRatio: parseFloat(missingRatio),
+          missingTimestamps: missingMinutes.slice(0, 10), // 保存前 10 个时间戳
           repaired: 0
         };
 
@@ -204,6 +234,29 @@ async function checkAllSymbols(options, config) {
     for (const detail of sorted) {
       const status = options.repair && detail.repaired > 0 ? '✅ 已修复' : '⚠️  待修复';
       console.log(`  ${detail.symbol.padEnd(15)} 缺失: ${detail.missingCount.toString().padStart(4)} 条 (${detail.missingRatio.toFixed(2)}%) ${status}`);
+      
+      // 如果是 verbose 模式，显示缺失的时间戳
+      if (options.verbose && detail.missingTimestamps && detail.missingTimestamps.length > 0) {
+        console.log(`    缺失时间戳:`);
+        for (let i = 0; i < Math.min(detail.missingTimestamps.length, 5); i++) {
+          const ts = detail.missingTimestamps[i];
+          const date = new Date(ts);
+          const localTime = date.toLocaleString('zh-CN', { 
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+          });
+          console.log(`      ${ts} → ${localTime}`);
+        }
+        if (detail.missingTimestamps.length > 5) {
+          console.log(`      ... 还有 ${detail.missingTimestamps.length - 5} 条`);
+        }
+      }
     }
     console.log('');
   }
