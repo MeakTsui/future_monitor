@@ -96,23 +96,50 @@ export class KlineIntegrityChecker {
     let checkedCount = 0;
     let repairedCount = 0;
     let errorCount = 0;
+    let skippedCount = 0;
 
-    // 逐个检查（避免并发过多）
-    for (const symbol of this.symbols) {
-      try {
-        const repaired = await this.checkAndRepairSymbol(symbol);
-        checkedCount++;
-        if (repaired > 0) {
-          repairedCount++;
+    // 分批处理，避免 API 限流
+    const batchSize = 50; // 每批处理 50 个交易对
+    const batchDelay = 5000; // 每批之间延迟 5 秒
+
+    for (let i = 0; i < this.symbols.length; i += batchSize) {
+      const batch = this.symbols.slice(i, i + batchSize);
+      const batchNum = Math.floor(i / batchSize) + 1;
+      const totalBatches = Math.ceil(this.symbols.length / batchSize);
+
+      logger.info({ 
+        batch: batchNum, 
+        totalBatches, 
+        symbols: batch.length 
+      }, `处理第 ${batchNum}/${totalBatches} 批交易对`);
+
+      // 逐个检查当前批次
+      for (const symbol of batch) {
+        try {
+          const repaired = await this.checkAndRepairSymbol(symbol);
+          checkedCount++;
+          if (repaired > 0) {
+            repairedCount++;
+          } else if (repaired === -1) {
+            // -1 表示跳过（无需修复）
+            skippedCount++;
+          }
+        } catch (err) {
+          errorCount++;
+          logger.warn({ symbol, err: err.message }, '单个交易对检查失败');
         }
-      } catch (err) {
-        errorCount++;
-        logger.warn({ symbol, err: err.message }, '单个交易对检查失败');
+
+        // 每检查一个交易对，延迟 200ms（避免过快）
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
 
-      // 每检查 10 个交易对，稍微延迟一下
-      if (checkedCount % 10 === 0) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+      // 批次之间延迟，避免触发限流
+      if (i + batchSize < this.symbols.length) {
+        logger.debug({ 
+          nextBatch: batchNum + 1, 
+          delayMs: batchDelay 
+        }, '等待处理下一批...');
+        await new Promise(resolve => setTimeout(resolve, batchDelay));
       }
     }
 
@@ -120,8 +147,10 @@ export class KlineIntegrityChecker {
     logger.info({ 
       checkedCount, 
       repairedCount, 
+      skippedCount,
       errorCount, 
-      durationMs: duration 
+      durationMs: duration,
+      durationMinutes: (duration / 60000).toFixed(2)
     }, 'K 线完整性检查完成');
   }
 
@@ -152,7 +181,7 @@ export class KlineIntegrityChecker {
 
     if (missingMinutes.length === 0) {
       logger.debug({ symbol }, 'K 线数据完整，无需修复');
-      return 0;
+      return -1; // -1 表示跳过（数据完整）
     }
 
     // 如果缺失数据过多（超过 50%），可能是新交易对或 Redis 刚启动，批量拉取
