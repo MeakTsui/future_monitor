@@ -12,6 +12,7 @@ export class KlineIntegrityChecker {
     this.checkIntervalMs = (config.checkIntervalMinutes || 5) * 60 * 1000;
     this.retentionHours = config.retentionHours || 12;
     this.restBaseUrl = config.restBaseUrl || 'https://fapi.binance.com';
+    this.refreshRecentMinutes = config.refreshRecentMinutes || 0; // 滚动刷新最近 N 分钟（0 表示禁用）
     this.isRunning = false;
     this.timer = null;
     this.lastCheckTime = new Map(); // symbol -> lastCheckTs
@@ -181,8 +182,14 @@ export class KlineIntegrityChecker {
       return -1; // -1 表示跳过
     }
 
-    // 检查时间范围：最近 12 小时，但不包括当前正在进行的分钟
     const now = Date.now();
+
+    // 如果启用了滚动刷新，先刷新最近 N 分钟的数据
+    if (this.refreshRecentMinutes > 0) {
+      await this._refreshRecentData(symbol, now);
+    }
+
+    // 检查时间范围：最近 12 小时，但不包括当前正在进行的分钟
     const fromTs = this._alignToMinute(now - this.retentionHours * 3600 * 1000);
     // toTs 设置为上一个已完成的分钟（当前分钟 - 1 分钟）
     const toTs = this._alignToMinute(now) - 60000;
@@ -425,6 +432,60 @@ export class KlineIntegrityChecker {
     ranges.push([rangeStart, rangeEnd]);
 
     return ranges;
+  }
+
+  /**
+   * 刷新最近 N 分钟的数据（用历史数据覆盖 WebSocket 数据）
+   * @param {string} symbol - 交易对符号
+   * @param {number} now - 当前时间戳
+   * @returns {Promise<number>} 刷新的数据条数
+   */
+  async _refreshRecentData(symbol, now) {
+    try {
+      // 计算刷新范围：最近 N 分钟，但不包括当前正在进行的分钟
+      const toTs = this._alignToMinute(now) - 60000; // 上一个已完成的分钟
+      const fromTs = toTs - (this.refreshRecentMinutes - 1) * 60000; // 往前推 N-1 分钟
+      
+      if (fromTs >= toTs) {
+        logger.debug({ symbol, fromTs, toTs }, '刷新范围无效');
+        return 0;
+      }
+
+      // 拉取历史数据（endTime 需要加 60000 以包含最后一分钟）
+      const endTime = toTs + 60000;
+      const klines = await klineRestClient.getKlinesWithRetry(symbol, '1m', fromTs, endTime);
+      
+      if (klines.length === 0) {
+        logger.debug({ symbol, fromTs, toTs }, '刷新数据为空');
+        return 0;
+      }
+
+      // 覆盖写入 Redis（已有数据会被替换）
+      await klineCache.saveKlinesBatch(symbol, klines);
+      
+      logger.debug({ 
+        symbol, 
+        count: klines.length,
+        minutes: this.refreshRecentMinutes,
+        from: new Date(fromTs).toISOString(),
+        to: new Date(toTs).toISOString()
+      }, '刷新最近数据完成');
+      
+      // 刷新后稍微延迟，避免与后续检查调用过于密集
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      return klines.length;
+    } catch (err) {
+      // 检查是否是无效交易对错误
+      if (this._isInvalidSymbolError(err)) {
+        logger.warn({ symbol, err: err.message }, '交易对无效，标记为跳过');
+        this.invalidSymbols.add(symbol);
+        return -1;
+      }
+      
+      logger.warn({ symbol, err: err.message }, '刷新最近数据失败');
+      return 0;
+    }
   }
 
   /**
