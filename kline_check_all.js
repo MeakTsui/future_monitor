@@ -112,19 +112,23 @@ async function checkAllSymbols(options, config) {
 
   const startTime = Date.now();
 
+  // 计算检查时间范围（所有交易对使用相同的时间范围）
+  const checkTime = Date.now();
+  const fromTs = Math.floor((checkTime - integrityConfig.retentionHours * 3600 * 1000) / 60000) * 60000;
+  const toTs = Math.floor(checkTime / 60000) * 60000 - 60000;
+  const totalMinutes = (toTs - fromTs) / 60000;
+
+  console.log(`检查时间范围: ${new Date(fromTs).toISOString()} - ${new Date(toTs).toISOString()}`);
+  console.log(`总分钟数: ${totalMinutes}\n`);
+
   // 逐个检查
   for (let i = 0; i < symbols.length; i++) {
     const symbol = symbols[i];
     const progress = `[${i + 1}/${symbols.length}]`;
 
     try {
-      // 检查缺失的数据
-      const now = Date.now();
-      const fromTs = Math.floor((now - integrityConfig.retentionHours * 3600 * 1000) / 60000) * 60000;
-      const toTs = Math.floor(now / 60000) * 60000 - 60000;
-
+      // 检查缺失的数据（使用统一的时间范围）
       const missingMinutes = await klineCache.findMissingMinutes(symbol, fromTs, toTs);
-      const totalMinutes = (toTs - fromTs) / 60000;
       const missingCount = missingMinutes.length;
       const missingRatio = (missingCount / totalMinutes * 100).toFixed(2);
 
@@ -211,6 +215,18 @@ async function checkAllSymbols(options, config) {
 
   if (results.repaired > 0) {
     console.log('✅ 数据修复完成！建议再次运行检查以验证修复结果\n');
+  }
+
+  // 说明：为什么可能显示缺少 1 条数据
+  if (results.missing > 0) {
+    const onlyOneMissing = results.details.filter(d => d.missingCount === 1).length;
+    if (onlyOneMissing > 0) {
+      console.log('📌 注意:');
+      console.log(`   ${onlyOneMissing} 个交易对显示缺少 1 条数据，这通常是正常的：`);
+      console.log('   - 检查时排除了当前正在进行的分钟（未完成的 K 线）');
+      console.log('   - 如果刚补全数据，最新的一分钟可能还未生成');
+      console.log('   - 等待 1-2 分钟后，monitor 会自动写入最新数据\n');
+    }
   }
 }
 
