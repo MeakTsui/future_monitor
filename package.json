@@ -13,7 +13,15 @@
     "market:state": "node market_state_minutely.js",
     "server": "node server.js",
     "symbols:update": "node symbols_update.js",
-    "avgvol:hourly": "node avg_vol_hourly.js"
+    "avgvol:hourly": "node avg_vol_hourly.js",
+    "kline:init": "node kline_init.js init",
+    "kline:stats": "node kline_init.js stats",
+    "kline:clear": "node kline_init.js clear",
+    "kline:check": "node check_redis_duplicates.js",
+    "kline:clean": "node clean_redis_duplicates.js",
+    "kline:check-all": "node kline_check_all.js",
+    "kline:repair-all": "node kline_check_all.js --repair",
+    "kline:integrity": "node kline_integrity_service.js"
   },
   "private": true,
   "dependencies": {
@@ -21,6 +29,7 @@
     "pino": "^9.2.0",
     "ws": "^8.18.3",
     "pino-pretty": "^11.2.2",
-    "better-sqlite3": "^9.4.3"
+    "better-sqlite3": "^9.4.3",
+    "redis": "^4.6.0"
   }
 }

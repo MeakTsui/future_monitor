@@ -5,6 +5,8 @@ import logger from "./logger.js";
 import { getAlertState as dbGetAlertState, setAlertState as dbSetAlertState, getAllSuppliesMap } from "./db.js";
 import http from "http";
 import { dispatchAlert, buildAlertPayload, buildDefaultText, formatNumber, formatCurrency, formatCurrencyCompact, buildBinanceFuturesUrl } from "./alerting/index.js";
+import { initRedisClient, isRedisConnected } from "./redis_client.js";
+import { klineCache } from "./kline_redis_cache.js";
 
 // Config
 const CONFIG_FILE = "./config.json";
@@ -324,16 +326,39 @@ class KlineAggregator {
     if (!this.buckets.has(symbol)) this.buckets.set(symbol, new Map());
     const map = this.buckets.get(symbol);
     const open = k && Number.isFinite(parseFloat(k.o)) ? parseFloat(k.o) : undefined;
+    const high = k && Number.isFinite(parseFloat(k.h)) ? parseFloat(k.h) : undefined;
     const low = k && Number.isFinite(parseFloat(k.l)) ? parseFloat(k.l) : undefined;
     const close = k && Number.isFinite(parseFloat(k.c)) ? parseFloat(k.c) : undefined;
     const volume = Number(quoteVol) || 0;
+    const numTrades = k && Number.isFinite(parseInt(k.n)) ? parseInt(k.n) : 0;
+    
     map.set(bucketStartMs, {
       openTime: bucketStartMs,
       open,
+      high,
       low,
       close,
       volume,
     });
+    
+    // 保存到 Redis（实时更新，包括未关闭的 K 线）
+    if (isRedisConnected()) {
+      const klineData = {
+        t: bucketStartMs,
+        o: k.o,
+        h: k.h,
+        l: k.l,
+        c: k.c,
+        v: k.v,
+        q: k.q,
+        n: k.n,
+        x: isClosed // 标记是否已关闭
+      };
+      klineCache.saveKline(symbol, klineData).catch(err => {
+        logger.debug({ symbol, err: err.message }, 'K 线保存到 Redis 失败');
+      });
+    }
+    
     // 清理过旧的桶
     const now = Date.now();
     const cutoff = now - this.windowMinutes * 60_000 - 60_000; // 额外留1分钟保证覆盖
@@ -634,6 +659,16 @@ async function main() {
   const config = loadConfig();
   if (config.logLevel) {
     try { logger.level = config.logLevel; } catch {}
+  }
+
+  // 初始化 Redis 连接（如果配置了）
+  if (config.redis && config.klineCache && config.klineCache.enabled) {
+    try {
+      await initRedisClient(config.redis);
+      logger.info('Redis 客户端初始化成功');
+    } catch (err) {
+      logger.warn({ err: err.message }, 'Redis 初始化失败，K 线缓存功能将不可用');
+    }
   }
 
   const ruleCfg = config.rule3ws || {};

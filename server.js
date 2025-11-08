@@ -5,6 +5,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import logger from './logger.js';
 import { getLatestMarketState, getMarketStateHistory, getMarketStateDetails, calculateMovingAverage, getAllSymbols, getAlertsStatsBySymbol, getSymbolAlerts, getLatestMarketVolumeScore, getMarketVolumeScoreHistory } from './db.js';
+import { initRedisClient, isRedisConnected } from './redis_client.js';
+import { klineCache } from './kline_redis_cache.js';
+import { getIntegrityChecker } from './kline_integrity_checker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -435,6 +438,130 @@ const server = http.createServer(async (req, res) => {
       }
     }
     
+    // ========== K 线数据查询接口（Redis）==========
+    
+    // 查询指定交易对的 K 线数据
+    if (req.method === 'GET' && pathname === '/api/klines') {
+      const q = parseQuery(req.url);
+      const symbol = (q.symbol || '').toUpperCase();
+      const from = q.from ? Number(q.from) : undefined;
+      const to = q.to ? Number(q.to) : undefined;
+      
+      if (!symbol) {
+        return sendJson(res, 400, { error: 'missing_symbol' });
+      }
+      
+      if (!isRedisConnected()) {
+        return sendJson(res, 503, { error: 'redis_not_connected' });
+      }
+      
+      try {
+        const klines = await klineCache.getKlines(symbol, from, to);
+        logger.info({ symbol, from, to, count: klines.length }, 'K 线查询完成');
+        return sendJson(res, 200, { data: klines });
+      } catch (err) {
+        logger.error({ symbol, err: err.message }, 'K 线查询失败');
+        return sendJson(res, 500, { error: 'query_failed', message: err.message });
+      }
+    }
+    
+    // 获取最新的 K 线数据
+    if (req.method === 'GET' && pathname === '/api/klines/latest') {
+      const q = parseQuery(req.url);
+      const symbol = (q.symbol || '').toUpperCase();
+      
+      if (!symbol) {
+        return sendJson(res, 400, { error: 'missing_symbol' });
+      }
+      
+      if (!isRedisConnected()) {
+        return sendJson(res, 503, { error: 'redis_not_connected' });
+      }
+      
+      try {
+        const kline = await klineCache.getLatestKline(symbol);
+        if (!kline) {
+          return sendJson(res, 404, { error: 'not_found' });
+        }
+        return sendJson(res, 200, { data: kline });
+      } catch (err) {
+        logger.error({ symbol, err: err.message }, '最新 K 线查询失败');
+        return sendJson(res, 500, { error: 'query_failed', message: err.message });
+      }
+    }
+    
+    // 获取 K 线数据统计信息
+    if (req.method === 'GET' && pathname === '/api/klines/stats') {
+      const q = parseQuery(req.url);
+      const symbol = (q.symbol || '').toUpperCase();
+      
+      if (!symbol) {
+        return sendJson(res, 400, { error: 'missing_symbol' });
+      }
+      
+      if (!isRedisConnected()) {
+        return sendJson(res, 503, { error: 'redis_not_connected' });
+      }
+      
+      try {
+        const count = await klineCache.getKlineCount(symbol);
+        const latest = await klineCache.getLatestKline(symbol);
+        return sendJson(res, 200, { 
+          data: { 
+            symbol, 
+            count, 
+            latestTime: latest ? latest.t : null 
+          } 
+        });
+      } catch (err) {
+        logger.error({ symbol, err: err.message }, 'K 线统计查询失败');
+        return sendJson(res, 500, { error: 'query_failed', message: err.message });
+      }
+    }
+    
+    // 手动触发完整性检查
+    if (req.method === 'POST' && pathname === '/api/klines/check') {
+      const q = parseQuery(req.url);
+      const symbol = (q.symbol || '').toUpperCase();
+      
+      if (!symbol) {
+        return sendJson(res, 400, { error: 'missing_symbol' });
+      }
+      
+      if (!isRedisConnected()) {
+        return sendJson(res, 503, { error: 'redis_not_connected' });
+      }
+      
+      const checker = getIntegrityChecker();
+      if (!checker) {
+        return sendJson(res, 503, { error: 'checker_not_running' });
+      }
+      
+      try {
+        const result = await checker.manualCheck(symbol);
+        logger.info({ symbol, result }, '手动完整性检查完成');
+        return sendJson(res, 200, { data: result });
+      } catch (err) {
+        logger.error({ symbol, err: err.message }, '手动完整性检查失败');
+        return sendJson(res, 500, { error: 'check_failed', message: err.message });
+      }
+    }
+    
+    // 获取所有已缓存的交易对列表
+    if (req.method === 'GET' && pathname === '/api/klines/symbols') {
+      if (!isRedisConnected()) {
+        return sendJson(res, 503, { error: 'redis_not_connected' });
+      }
+      
+      try {
+        const symbols = await klineCache.getAllSymbols();
+        return sendJson(res, 200, { data: symbols });
+      } catch (err) {
+        logger.error({ err: err.message }, '交易对列表查询失败');
+        return sendJson(res, 500, { error: 'query_failed', message: err.message });
+      }
+    }
+    
     return notFound(res);
   } catch (e) {
     logger.error({ err: String(e) }, 'server error');
@@ -442,6 +569,30 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  logger.info({ port: PORT }, 'HTTP 服务已启动');
-});
+// 初始化 Redis 连接
+async function initServer() {
+  try {
+    const configPath = './config.json';
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      
+      // 初始化 Redis（如果配置了）
+      if (config.redis && config.klineCache && config.klineCache.enabled) {
+        try {
+          await initRedisClient(config.redis);
+          logger.info('Redis 客户端初始化成功');
+        } catch (err) {
+          logger.warn({ err: err.message }, 'Redis 初始化失败，K 线查询功能将不可用');
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn({ err: err.message }, '配置文件加载失败');
+  }
+  
+  server.listen(PORT, () => {
+    logger.info({ port: PORT }, 'HTTP 服务已启动');
+  });
+}
+
+initServer();

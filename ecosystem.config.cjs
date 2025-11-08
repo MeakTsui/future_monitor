@@ -91,6 +91,18 @@ module.exports = {
       env: {
         LOG_LEVEL: process.env.LOG_LEVEL || 'info'
       }
+    },
+    {
+      name: 'kline-integrity',
+      script: 'kline_integrity_service.js',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '200M',
+      env: {
+        LOG_LEVEL: process.env.LOG_LEVEL || 'info'
+      }
     }
   ]
 };
