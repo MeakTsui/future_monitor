@@ -1,9 +1,9 @@
 // 默认 Rule3 WS 策略（插件化）
-import fetch from "node-fetch";
 import logger from "../logger.js";
 import { getMarketStateMinuteLast5Min, getMarketStateMinuteLast1Hour, getLatestMarketVolumeScore } from "../db.js";
 import { computeWeightedMarketStateMA } from "../market_state_aggregator.js";
 import * as helpers from "../alerting/index.js";
+import { klineCache } from "../kline_redis_cache.js";
 // 行为与内置版本一致：当聚合器计算的滚动成交额 sum >= 阈值 thresholdUsd 时：
 // - 若启用市值过滤(marketCapMaxUsd > 0)，要求市值在 (0, marketCapMaxUsd)
 // - 同一分钟桶去重
@@ -223,7 +223,7 @@ export default async function rule3Default(ctx, config, helpers) {
   // }
 
   // 均量检查（可选）：
-  // 拉取最近 limit 根 1m K 线；使用前 (limit - windowMinutes) 根，按 windowMinutes 为一组不重叠分组，
+  // 从 Redis 获取最近 limit 根 1m K 线；使用前 (limit - windowMinutes) 根，按 windowMinutes 为一组不重叠分组，
   // 计算这些分组的 5m（或 W 分钟）成交额均值 baseline，要求当前窗口 sumTurnover >= multiplier * baseline。
   // 示例：limit=100, windowMinutes=5，则均量 = sum(vol(100-5)) / ((100-5)/5)。
   try {
@@ -235,45 +235,74 @@ export default async function rule3Default(ctx, config, helpers) {
       ? Math.min(1500, Math.floor(ruleCfg.avgVolumeKlinesLimit))
       : 100; // 默认 100
     if (enabled) {
-      const base = (typeof ruleCfg.restBaseUrl === 'string' && ruleCfg.restBaseUrl) ? ruleCfg.restBaseUrl : 'https://fapi.binance.com';
-      const url = `${base}/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=1m&limit=${limit}`;
-      const resp = await fetch(url);
-      if (resp.ok) {
-        const data = await resp.json();
-        if (Array.isArray(data) && data.length === limit) {
-          // 使用前 (limit - W) 根，避免与当前窗口重叠
-          const usable = data.slice(0, limit - W);
-          const blocks = Math.floor(usable.length / W);
-          if (blocks > 0) {
-            let total = 0;
-            for (let b = 0; b < blocks; b++) {
-              let sum = 0;
-              for (let j = 0; j < W; j++) {
-                const k = usable[b * W + j];
-                // k[7] 为该 1m 的报价资产成交量（USDT）
-                const q = parseFloat(k && k[7]);
-                if (Number.isFinite(q)) sum += q;
-              }
-              total += sum;
+      // 从 Redis 获取最近 limit 根 K 线
+      const now = Date.now();
+      const toTs = Math.floor(now / 60000) * 60000 - 60000; // 上一个已完成的分钟
+      const fromTs = toTs - (limit - 1) * 60000; // 往前推 limit-1 分钟
+      
+      const klines = await klineCache.getKlines(symbol, fromTs, toTs);
+      
+      if (Array.isArray(klines) && klines.length >= limit - 5) { // 允许少量缺失（最多 5 根）
+        // 按时间戳排序（升序）
+        klines.sort((a, b) => a.t - b.t);
+        
+        // 使用前 (length - W) 根，避免与当前窗口重叠
+        const usable = klines.slice(0, Math.max(0, klines.length - W));
+        const blocks = Math.floor(usable.length / W);
+        
+        if (blocks > 0) {
+          let total = 0;
+          for (let b = 0; b < blocks; b++) {
+            let sum = 0;
+            for (let j = 0; j < W; j++) {
+              const k = usable[b * W + j];
+              // k.q 为该 1m 的报价资产成交量（USDT）
+              const q = parseFloat(k && k.q);
+              if (Number.isFinite(q)) sum += q;
             }
-            const avgW = total / blocks;
-            if (!(sumTurnover >= multiplier * avgW)) {
-              // 未达到均量倍数阈值，跳过告警
-              logger.debug({ usable: usable.length, W }, `均量检查：${symbol}, ${ruleCfg.windowMinutes}m成交量${sumTurnover} 没有超过均值 ${avgW}，不发送`);
-              return;
-            }
-            logger.info({ usable: usable.length, W }, `均量检查：${symbol}, ${ruleCfg.windowMinutes}m成交量${sumTurnover} 超过均值 ${avgW}，发送告警`);
-          } else {
-            logger.warn({ usable: usable.length, W }, '均量检查：可用数据不足，不发送');
-            return
+            total += sum;
           }
+          const avgW = total / blocks;
+          if (!(sumTurnover >= multiplier * avgW)) {
+            // 未达到均量倍数阈值，跳过告警
+            logger.debug({ 
+              symbol,
+              source: 'redis',
+              klines: klines.length,
+              usable: usable.length, 
+              blocks,
+              W,
+              avgW: avgW.toFixed(2),
+              sumTurnover: sumTurnover.toFixed(2),
+              multiplier
+            }, `均量检查：${symbol}, ${helpers.windowMinutes}m成交量${sumTurnover.toFixed(2)} 没有超过均值 ${avgW.toFixed(2)} 的 ${multiplier} 倍，不发送`);
+            return;
+          }
+          logger.info({ 
+            symbol,
+            source: 'redis',
+            klines: klines.length,
+            usable: usable.length, 
+            blocks,
+            W,
+            avgW: avgW.toFixed(2),
+            sumTurnover: sumTurnover.toFixed(2),
+            multiplier
+          }, `均量检查：${symbol}, ${helpers.windowMinutes}m成交量${sumTurnover.toFixed(2)} 超过均值 ${avgW.toFixed(2)} 的 ${multiplier} 倍，发送告警`);
         } else {
-          logger.warn({ len: Array.isArray(data) ? data.length : -1, need: limit }, '均量检查：返回 K 线数量异常，不发送');
-          return
+          logger.warn({ symbol, source: 'redis', usable: usable.length, W }, '均量检查：可用数据不足以分组，不发送');
+          return;
         }
       } else {
-        logger.warn({ status: resp.status }, '均量检查：请求 K 线失败，不发送');
-        return
+        logger.warn({ 
+          symbol, 
+          source: 'redis',
+          got: Array.isArray(klines) ? klines.length : 0, 
+          need: limit,
+          fromTs,
+          toTs
+        }, '均量检查：Redis K 线数量不足，不发送');
+        return;
       }
     }
     // 注释：bypassAvg 逻辑已移除，此处保底日志已无意义
