@@ -14,6 +14,16 @@ export class KlineRedisCache {
   }
 
   /**
+   * 设置数据保留时长
+   * @param {number} retentionHours - 保留时长（小时）
+   */
+  setRetentionHours(retentionHours) {
+    this.retentionHours = retentionHours;
+    this.retentionMs = retentionHours * 3600 * 1000;
+    logger.info({ retentionHours, retentionMs: this.retentionMs }, 'K 线数据保留时长已更新');
+  }
+
+  /**
    * 保存 K 线数据到 Redis（滑动窗口）
    * @param {string} symbol - 交易对符号
    * @param {Object} klineData - K 线数据 { o, h, l, c, v, q, t, n, x }
@@ -291,7 +301,8 @@ export class KlineRedisCache {
       return keys.map(key => key.replace('kline:1m:', ''));
     }, []);
   }
+
 }
 
-// 导出单例实例
+// 导出单例实例（默认 12 小时，可通过 setRetentionHours 动态修改）
 export const klineCache = new KlineRedisCache(12);

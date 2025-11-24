@@ -666,6 +666,10 @@ async function main() {
     try {
       await initRedisClient(config.redis);
       logger.info('Redis 客户端初始化成功');
+      
+      // 设置 K 线数据保留时长
+      const retentionHours = config.klineCache.retentionHours || 12;
+      klineCache.setRetentionHours(retentionHours);
     } catch (err) {
       logger.warn({ err: err.message }, 'Redis 初始化失败，K 线缓存功能将不可用');
     }
