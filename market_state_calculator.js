@@ -100,7 +100,7 @@ export async function computeMarketStateRealtime(tsMs, readers, options = {}) {
       supplyMap.set(row.symbol, row.circulating_supply);
     }
     cachedUniverse = { ts_hour: hourKey, symbols: null, supplyMap };
-    logger.info({ count: supplyRows.length }, '更新币种供应量缓存');
+    // logger.info({ count: supplyRows.length }, '更新币种供应量缓存');
   }
 
   // 更新均量缓存

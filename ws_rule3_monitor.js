@@ -141,6 +141,13 @@ async function sendAlertNow(symbol, windowMinutes, sumTurnover, config, extras =
       if (typeof extras.market_price_score_1h === 'number' && Number.isFinite(extras.market_price_score_1h)) {
         payload.metrics.market_price_score_1h = extras.market_price_score_1h;
       }
+      // 动态阈值相关字段
+      if (typeof extras.volume_score_ratio === 'number' && Number.isFinite(extras.volume_score_ratio)) {
+        payload.metrics.volume_score_ratio = extras.volume_score_ratio;
+      }
+      if (typeof extras.dynamic_threshold === 'number' && Number.isFinite(extras.dynamic_threshold)) {
+        payload.metrics.dynamic_threshold = extras.dynamic_threshold;
+      }
       
       // 兼容旧版字段（如果存在）
       if (typeof extras.total_score === 'number' && Number.isFinite(extras.total_score)) {
@@ -283,8 +290,36 @@ class KlineAggregator {
         
         // compute rolling sum
         const sum = this._sumLastMinutes(symbol, nowMs, this.windowMinutes);
-        if (sum >= this.thresholdUsd) {
-          const ctx = this._buildContextForStrategies({ symbol, openTime, sum, closePrice });
+        
+        // 获取市场 volume score 并计算动态阈值
+        let market_volume_score_2 = null;
+        let volume_score_ratio = 1.0; // 默认值
+        let dynamicThreshold = this.thresholdUsd;
+        
+        try {
+          const { getLatestMarketVolumeScore } = await import('./db.js');
+          const mvs = getLatestMarketVolumeScore();
+          if (mvs && typeof mvs.market_volume_score_2 === 'number') {
+            market_volume_score_2 = mvs.market_volume_score_2;
+            // 映射到 [0.7, 1.0]: 如果 < 0.7 则取 0.7，如果 > 1.0 则取 1.0
+            volume_score_ratio = Math.max(0.7, Math.min(1.0, market_volume_score_2));
+            dynamicThreshold = this.thresholdUsd * volume_score_ratio;
+          }
+        } catch (e) {
+          logger.debug({ err: e.message }, '获取市场 volume score 失败，使用默认阈值');
+        }
+        
+        // 使用动态阈值判断
+        if (sum >= dynamicThreshold) {
+          const ctx = this._buildContextForStrategies({ 
+            symbol, 
+            openTime, 
+            sum, 
+            closePrice,
+            market_volume_score_2,
+            volume_score_ratio,
+            dynamicThreshold
+          });
           for (const fn of this.strategies) {
             try { fn(ctx, config, this._helpers()); } catch (e) { logger.warn({ err: e.message }, '自定义策略执行异常'); }
           }
@@ -386,7 +421,7 @@ class KlineAggregator {
       .map(([, v]) => v);
   }
 
-  _buildContextForStrategies({ symbol, openTime, sum, closePrice }) {
+  _buildContextForStrategies({ symbol, openTime, sum, closePrice, market_volume_score_2, volume_score_ratio, dynamicThreshold }) {
     // 市值（如果可能）
     let marketCap, supplyKey, circulating;
     const sf = findSupplyForSymbol(this.supplyMap, symbol);
@@ -428,6 +463,10 @@ class KlineAggregator {
       closeForDisplay,
       deltaPct,
       trendEmoji,
+      // 动态阈值相关参数
+      market_volume_score_2,
+      volume_score_ratio,
+      dynamicThreshold,
     };
   }
 

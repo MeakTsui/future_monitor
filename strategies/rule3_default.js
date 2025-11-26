@@ -15,7 +15,7 @@ import { klineCache } from "../kline_redis_cache.js";
 const lastBucketSent = new Map(); // symbol -> last openTime
 
 function buildStrategyText(ctx, reasonLine, helpers) {
-  const { symbol, sumTurnover, marketCap, prevForDisplay, closeForDisplay, deltaPct, trendEmoji, closePrice } = ctx;
+  const { symbol, sumTurnover, marketCap, prevForDisplay, closeForDisplay, deltaPct, trendEmoji, closePrice, dynamicThreshold, market_volume_score_2, volume_score_ratio } = ctx;
   const {
     formatNumber,
     formatCurrency,
@@ -28,7 +28,14 @@ function buildStrategyText(ctx, reasonLine, helpers) {
   const prefixEmoji = '‼️‼️'; // rule3 默认策略前缀
   lines.push(`${prefixEmoji} ${link} ${trendEmoji || ''}`.trim());
   if (reasonLine) lines.push(`原因: ${reasonLine}`);
-  lines.push(`成交量(USD): ${formatCurrencyCompact(sumTurnover)}`);
+  
+  // 显示成交量信息，包括动态阈值
+  if (typeof dynamicThreshold === 'number' && typeof market_volume_score_2 === 'number' && typeof volume_score_ratio === 'number') {
+    lines.push(`成交量: ${formatCurrencyCompact(sumTurnover)} (阈值: ${formatCurrencyCompact(dynamicThreshold)}, VS: ${market_volume_score_2.toFixed(2)}, 比率: ${volume_score_ratio.toFixed(2)})`);
+  } else {
+    lines.push(`成交量(USD): ${formatCurrencyCompact(sumTurnover)}`);
+  }
+  
   if (Number.isFinite(marketCap)) lines.push(`市值: ${formatCurrencyCompact(marketCap)}`);
   if (Number.isFinite(marketCap) && marketCap > 0) {
     const ratio = sumTurnover / marketCap;
@@ -151,7 +158,7 @@ export async function computeMarketStateRealtime(tsMs, readers, options = {}) {
 
 
 export default async function rule3Default(ctx, config, helpers) {
-  const { symbol, openTime, sumTurnover, marketCap, prevForDisplay, closeForDisplay, deltaPct, trendEmoji, closePrice } = ctx;
+  const { symbol, openTime, sumTurnover, marketCap, prevForDisplay, closeForDisplay, deltaPct, trendEmoji, closePrice, market_volume_score_2, volume_score_ratio, dynamicThreshold } = ctx;
 
   // 同一分钟桶去重
   const last = lastBucketSent.get(symbol);
@@ -395,16 +402,8 @@ export default async function rule3Default(ctx, config, helpers) {
     }
   } catch {}
 
-  // 查询最新的市场 volume score 2
-  let marketVolumeScore2 = null;
-  try {
-    const mvs = getLatestMarketVolumeScore();
-    if (mvs && typeof mvs.market_volume_score_2 === 'number') {
-      marketVolumeScore2 = Number(mvs.market_volume_score_2.toFixed(4));
-    }
-  } catch (e) {
-    logger.warn({ err: String(e) }, '获取市场 volume score 2 失败');
-  }
+  // 使用从 context 传入的 market_volume_score_2（已在 ws_rule3_monitor.js 中获取）
+  const marketVolumeScore2 = (typeof ctx.market_volume_score_2 === 'number') ? Number(ctx.market_volume_score_2.toFixed(4)) : null;
 
   let text = buildStrategyText(ctx, reasonLine, helpers);
   try {
@@ -429,6 +428,9 @@ export default async function rule3Default(ctx, config, helpers) {
     market_state: marketStateRes ? marketStateRes.state : undefined,
     market_price_score_1h: (marketState1h && typeof marketState1h.price_score_1h === 'number') ? Number(marketState1h.price_score_1h.toFixed(2)) : undefined,
     half_bars_to_half_threshold: typeof halfBars === 'number' ? halfBars : undefined,
-    price_change_pct_from_earliest_open: (typeof priceChangePct === 'number') ? Number(priceChangePct.toFixed(3)) : undefined
+    price_change_pct_from_earliest_open: (typeof priceChangePct === 'number') ? Number(priceChangePct.toFixed(3)) : undefined,
+    // 动态阈值相关字段
+    volume_score_ratio: (typeof volume_score_ratio === 'number') ? Number(volume_score_ratio.toFixed(2)) : undefined,
+    dynamic_threshold: (typeof dynamicThreshold === 'number') ? dynamicThreshold : undefined,
   }, { strategy: `${helpers.windowMinutes}m_turnover`, text });
 }
